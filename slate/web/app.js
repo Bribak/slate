@@ -750,9 +750,12 @@ function registerProviders() {
 
 // ---------------------------------------------------------------- glycan drawings (slate/glycans.py)
 
-// A string on one line that reads as an IUPAC-condensed glycan: only glycan characters, and at least one linkage.
-// Of 1,099 such strings in glycowork and CandyCrunch, GlycoDraw drew all but 4 deliberately broken test inputs.
-const GLYCAN_STRING = /(['"])([A-Za-z[{][A-Za-z0-9?\-()[\]{},.|/ ]*?)\1/g;
+// A string on one line that reads as an IUPAC-condensed glycan: only glycan characters, and at least one linkage. No spaces,
+// as in glycans.GLYCAN: all 13 spaced ones in glycowork and CandyCrunch were prose ("Transform -1)Fruf(b2-3)Fruf(b2- repeat
+// structure into ..."), which GlycoDraw drew with the words as residues. f-strings (f"{{{p}(?1-?)}}") and bytes are skipped.
+// Of the 1,121 distinct strings left in glycowork and CandyCrunch, GlycoDraw drew all but 4 deliberately broken test inputs.
+const GLYCAN_STRING = /(['"])([A-Za-z[{][A-Za-z0-9?\-()[\]{},.|/]*?)\1/g;
+const NOT_TEXT = /[fFbB][A-Za-z]?$/;  // a string prefix that makes the quotes something other than plain text
 const LINKAGE = /\([abo?][\d?]?-[\d?][\d?|/,]*\)/;
 const GLYCANS_KEPT = 300;  // drawings, most recently shown first; each is about 11 KB of data URLs
 const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, colors: null, off: false, noProcess: false, count: 0, cards: new Map()};
@@ -803,7 +806,7 @@ function glycansIn(model, from, to) {
     const line = model.getLineContent(n);
     if (line.length > 3000 || !line.includes('-')) continue;
     for (const m of line.matchAll(GLYCAN_STRING)) {
-      if (LINKAGE.test(m[2])) out.push({glycan: m[2], line: n, start: m.index + 1, end: m.index + m[0].length + 1});
+      if (LINKAGE.test(m[2]) && !NOT_TEXT.test(line.slice(Math.max(0, m.index - 2), m.index))) out.push({glycan: m[2], line: n, start: m.index + 1, end: m.index + m[0].length + 1});
     }
   }
   return out;
@@ -882,8 +885,10 @@ function setupGlycans(saved) {
       const f = glycans.off || glycans.noProcess ? null : glycansIn(model, position.lineNumber, position.lineNumber).find((g) => position.column >= g.start && position.column <= g.end);
       const d = f && glycans.drawn.get(f.glycan);
       if (!d) return null;
-      const scale = Math.min(1, 480 / d.size[0], 360 / d.size[1]);
       const card = await Promise.race([glycanCard(f.glycan), new Promise((r) => setTimeout(() => r(''), 400))]);
+      // Monaco caps a hover at a quarter of the editor's height, at least 250 px: a taller drawing pushed the card out of sight
+      const room = Math.max(250, editor.getLayoutInfo().height / 4) - (card ? 110 : 16);
+      const scale = Math.min(1, 480 / d.size[0], room / d.size[1]);
       return {range: new monaco.Range(f.line, f.start, f.line, f.end),
         contents: [{value: `![SNFG drawing](${d.full}|width=${Math.round(d.size[0] * scale)},height=${Math.round(d.size[1] * scale)})`},
           ...(card ? [{value: card, isTrusted: true}] : [])]};
