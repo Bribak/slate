@@ -1,9 +1,9 @@
 """Signatures and docstrings of the open projects' own functions, for the hints while typing a call and on hover.
 
-Read with ast, without jedi: from each folder's top-level packages (as style.py reads GW3's signatures), from glycowork
-and CandyCrunch where the console's Python installed them when their checkouts are not open (libraries.py), and from the
-open file's newest text that parsed. Kept per file with its mtime in hints.json, so a new session reads only what
-changed. Library functions (pandas, numpy, networkx) get no hints; a name is only resolved through the file's own
+Read with ast, without jedi: from each folder's top-level packages (as style.py reads GW3's signatures), from the lab's
+libraries (libraries.NAMES) where the console's Python installed them when their checkouts are not open (libraries.py),
+and from the open file's newest text that parsed. Kept per file with its mtime in hints.json, so a new session reads
+only what changed. Library functions (pandas, numpy, networkx) get no hints; a name is only resolved through the file's own
 definitions and imports, since a hint for the wrong function is worse than none.
 """
 import ast
@@ -177,7 +177,8 @@ def _scan(roots, libraries = None):
             continue
         _scanned[key] = time.time()
         try:
-            packages = [d for d in Path(root).iterdir() if d.is_dir() and (d / '__init__.py').is_file() and only in (None, d.name)]  # as style.signatures: not a .venv's thousands of files
+            folders = [Path(root) / only] if only else [d for d in Path(root).iterdir() if d.is_dir()]  # a library by its name: listing site-packages (949 entries) took 230-290 ms per library and rescan
+            packages = [d for d in folders if (d / '__init__.py').is_file()]  # as style.signatures: not a .venv's thousands of files
         except OSError:
             continue
         for f in (f for p in packages for f in p.rglob('*.py') if not workspace.WALK_SKIP & set(f.relative_to(root).parts)):  # below root: an installed library sits in site-packages
@@ -260,7 +261,7 @@ def _console_context(entries):
 
 def lookup(path, name, qualifier = None, roots = (), console = None, libraries = None):
     """Descriptions of what `qualifier.name` is at a call in path (or in the console, given its history), best first.
-    libraries: {name: folder} of glycowork and CandyCrunch where the console's Python installed them (libraries.py)."""
+    libraries: {name: folder} of the lab's libraries where the console's Python installed them (libraries.py)."""
     with _lock:
         _scan(list(roots), libraries = libraries)
         sources = list(roots) + list((libraries or {}).values())

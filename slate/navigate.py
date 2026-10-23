@@ -39,7 +39,7 @@ _watching = False
 _idle = None  # timer that drops the parsed trees when go-to-definition rests
 _jedi_idle = None  # timer that ends jedi's subprocess
 _environment = None  # jedi's Python for its compiled-module subprocess
-_libraries = {}  # {package: folder holding it} of glycowork and CandyCrunch installed for the console's Python (libraries.py), set by goto
+_libraries = {}  # {package: folder holding it} of the lab's libraries installed for the console's Python (libraries.py), set by goto
 
 
 class Superseded(BaseException):
@@ -154,7 +154,7 @@ def module_file(module, level, here, roots):
         own = [r for r in roots if Path(r) in Path(here).parents]
         bases = ([] if (folder / '__init__.py').is_file() else [folder]) + [Path(r) for r in own + [r for r in roots if r not in own]]  # a script imports its neighbours
         if parts and parts[0] in _libraries:
-            bases.append(Path(_libraries[parts[0]]))  # pip-installed glycowork or CandyCrunch, read with ast like the open folders
+            bases.append(Path(_libraries[parts[0]]))  # a pip-installed library of the lab's, read with ast like the open folders
     for base in bases:
         p = base.joinpath(*parts)
         for f in ((p.with_name(p.name + '.py'), p / '__init__.py') if parts else (p / '__init__.py',)):
@@ -524,7 +524,7 @@ def with_jedi(path, source, line, col, roots, ticket):
 
 def goto(path, source, line, col, roots, libraries = None):
     """Definitions of the name at a 1-based line and 0-based column: [{path, line, col, name}]. libraries: {package: folder}
-    of glycowork and CandyCrunch where the console's Python installed them, read like the open folders."""
+    of the lab's libraries (libraries.NAMES) where the console's Python installed them, read like the open folders."""
     global _current, _done, _idle
     lines = source.split('\n')
     text = lines[line - 1] if 0 < line <= len(lines) else ''

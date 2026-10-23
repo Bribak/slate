@@ -1,8 +1,10 @@
-"""Where a Python has glycowork and CandyCrunch installed, for hints and go-to-definition into them when their checkouts are
-not among the open folders (hints.py, navigate.py): most of the group installs them with pip.
+"""Where a Python has the lab's libraries (NAMES: glycowork, CandyCrunch, glycorender, glycontact) installed, for hints and
+go-to-definition into them when their checkouts are not among the open folders (hints.py, navigate.py): most of the group
+installs them with pip.
 
 Asking a Python takes one short process (about 60 ms, importlib.util.find_spec, which finds a package without importing
-it), so the answer is kept per interpreter with its mtime in libraries.json, and a session asks each Python once.
+it), so the answer is kept per interpreter with its mtime and the names asked in libraries.json, and a session asks each
+Python once. A library installed later is only seen once the interpreter's mtime changes.
 """
 import json
 import os
@@ -13,7 +15,7 @@ from pathlib import Path
 from slate import state
 from slate.system import NO_WINDOW
 
-NAMES = ('glycowork', 'candycrunch')
+NAMES = ('glycowork', 'candycrunch', 'glycorender', 'glycontact')
 FIND = ('import importlib.util, json, os, sys\n'
         'out = {}\n'
         'for name in sys.argv[1:]:\n'
@@ -22,7 +24,7 @@ FIND = ('import importlib.util, json, os, sys\n'
         '        out[name] = os.path.dirname(list(spec.submodule_search_locations)[0])\n'
         'print(json.dumps(out))\n')
 _lock = threading.Lock()
-_known = None  # {python: [mtime, {name: folder holding the package}]}
+_known = None  # {python: [mtime, {name: folder holding the package}, names asked]}
 
 
 def cache_file():
@@ -43,14 +45,14 @@ def installed(python, roots = ()):
         except OSError:
             return {}
         entry = _known.get(python)
-        if entry is None or entry[0] != mtime:
+        if entry is None or entry[0] != mtime or entry[2:] != [list(NAMES)]:  # a list from before NAMES grew lacks the newer names
             try:
                 out = subprocess.run([python, '-E', '-c', FIND, *NAMES], capture_output = True, text = True, timeout = 20, cwd = Path(python).parent,  # not -I, which hides pip install --user
                                      creationflags = NO_WINDOW)  # and in Python's own folder: a glycowork folder where slate runs would shadow the real one
                 found = json.loads(out.stdout or '{}')
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 found = {}
-            _known[python] = entry = [mtime, found]
+            _known[python] = entry = [mtime, found, list(NAMES)]
             try:
                 cache_file().parent.mkdir(parents = True, exist_ok = True)
                 cache_file().write_text(json.dumps(_known), encoding = 'utf-8')

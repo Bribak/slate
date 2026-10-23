@@ -177,7 +177,7 @@ class Api:
         return style.format_source(path, text, self._state.get('style_script'))
 
     def _libraries(self, path, roots):
-        """{package: folder} of glycowork and CandyCrunch as installed for the Python that runs path's project (the console's
+        """{package: folder} of the lab's libraries (libraries.NAMES) as installed for the Python that runs path's project (the console's
         running one for the console), when their checkouts are not open (slate/libraries.py)."""
         root = next((r for r in roots if project_key(path or '').startswith(project_key(r) + '\\')), None) if path else None
         python = (self._console.python if path is None else None) or self._python_for(root)
