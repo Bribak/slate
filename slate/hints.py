@@ -1,6 +1,7 @@
 """Signatures and docstrings of the open projects' own functions, for the hints while typing a call and on hover.
 
-Read with ast, without jedi: from each folder's top-level packages (as style.py reads GW3's signatures) and from the
+Read with ast, without jedi: from each folder's top-level packages (as style.py reads GW3's signatures), from glycowork
+and CandyCrunch where the console's Python installed them when their checkouts are not open (libraries.py), and from the
 open file's newest text that parsed. Kept per file with its mtime in hints.json, so a new session reads only what
 changed. Library functions (pandas, numpy, networkx) get no hints; a name is only resolved through the file's own
 definitions and imports, since a hint for the wrong function is worse than none.
@@ -21,6 +22,8 @@ _files = None  # {path: [mtime, module, definitions]} for package files on disk,
 _open = {}  # {path key: (definitions, imports)} from the newest text of open files that parsed
 _scanned = {}  # {root: time of the last check}
 _console = (None, None)  # (key of the console's history, (definitions, imports)) parsed from it
+_version = 0  # bumped whenever _files changes, which invalidates _ordered
+_ordered = (None, [])  # ((sources, _version), the entries under them, in their order)
 
 
 def cache_file():
@@ -162,19 +165,22 @@ def _save():
         pass  # only the next session's first hint gets slower
 
 
-def _scan(roots):
-    """Read every package file of the folders that changed since it was last read (at most every RESCAN seconds)."""
+def _scan(roots, libraries = None):
+    """Read every package file of the folders, and of the installed libraries ({name: folder}), that changed since it was
+    last read (at most every RESCAN seconds)."""
+    global _version
     _load()
     changed = False
-    for root in roots:
-        if time.time() - _scanned.get(root, 0) < RESCAN:
+    for root, only in [(r, None) for r in roots] + [(folder, name) for name, folder in (libraries or {}).items()]:
+        key = (root, only)
+        if time.time() - _scanned.get(key, 0) < RESCAN:
             continue
-        _scanned[root] = time.time()
+        _scanned[key] = time.time()
         try:
-            packages = [d for d in Path(root).iterdir() if d.is_dir() and (d / '__init__.py').is_file()]  # as style.signatures: not a .venv's thousands of files
+            packages = [d for d in Path(root).iterdir() if d.is_dir() and (d / '__init__.py').is_file() and only in (None, d.name)]  # as style.signatures: not a .venv's thousands of files
         except OSError:
             continue
-        for f in (f for p in packages for f in p.rglob('*.py') if not workspace.WALK_SKIP & set(f.parts)):
+        for f in (f for p in packages for f in p.rglob('*.py') if not workspace.WALK_SKIP & set(f.relative_to(root).parts)):  # below root: an installed library sits in site-packages
             try:
                 mtime = str(f.stat().st_mtime_ns)
             except OSError:
@@ -190,6 +196,7 @@ def _scan(roots):
             _files[key] = [mtime, module_of(f, root), found]
             changed = True
     if changed:
+        _version += 1
         _save()
 
 
@@ -204,9 +211,22 @@ def _key(path):
     return os.path.normcase(os.path.abspath(path))
 
 
-def _module(name):
+def _within(sources):
+    """The scanned files under the open folders and installed libraries in use, those of the open folders first: a
+    library's copy stays in hints.json after its checkout is opened, and must not win over it."""
+    global _ordered
+    key = (tuple(sources), _version)
+    if _ordered[0] != key:  # kept until the folders or the files change: rebuilding it took a few ms per keystroke in a call
+        prefixes = [os.path.join(os.path.normcase(os.path.abspath(s)), '') for s in sources]
+        rank = lambda path: next((i for i, p in enumerate(prefixes) if os.path.normcase(path).startswith(p)), None)
+        ranked = [(r, n, entry) for n, (path, entry) in enumerate(_files.items()) if (r := rank(path)) is not None]
+        _ordered = (key, [entry for _, _, entry in sorted(ranked, key = lambda x: x[:2])])
+    return _ordered[1]
+
+
+def _module(name, sources):
     """Definitions of a dotted module among the scanned package files ({} when it is not one of the open projects')."""
-    return next((found for _, module, found in _files.values() if module == name), {})
+    return next((found for _, module, found in _within(sources) if module == name), {})
 
 
 def _absolute(module, path):
@@ -238,10 +258,12 @@ def _console_context(entries):
     return _console[1]
 
 
-def lookup(path, name, qualifier = None, roots = (), console = None):
-    """Descriptions of what `qualifier.name` is at a call in path (or in the console, given its history), best first."""
+def lookup(path, name, qualifier = None, roots = (), console = None, libraries = None):
+    """Descriptions of what `qualifier.name` is at a call in path (or in the console, given its history), best first.
+    libraries: {name: folder} of glycowork and CandyCrunch where the console's Python installed them (libraries.py)."""
     with _lock:
-        _scan(list(roots))
+        _scan(list(roots), libraries = libraries)
+        sources = list(roots) + list((libraries or {}).values())
         if console is not None:
             defs, imports = _console_context(console)
         elif _key(path) in _open:
@@ -257,14 +279,14 @@ def lookup(path, name, qualifier = None, roots = (), console = None):
                 return []  # a method of some object, which cannot be resolved by name alone
             module, attr = imports[head]
             module = _absolute(module, path) + (f'.{attr}' if attr else '') + (f'.{rest}' if rest else '')
-            return [d for d in _module(module).get(name, []) if d['kind'] != 'method']
+            return [d for d in _module(module, sources).get(name, []) if d['kind'] != 'method']
         local = [d for d in defs.get(name, []) if d['kind'] != 'method']
         if local or name not in imports:
             return local[:5]
         module, attr = imports[name]
         module = _absolute(module, path)
-        found = [d for d in _module(module).get(attr or name, []) if d['kind'] != 'method']
+        found = [d for d in _module(module, sources).get(attr or name, []) if d['kind'] != 'method']
         if not found and attr:  # re-exported by a package's __init__: the same name anywhere in that top-level package
             top = module.split('.')[0]
-            found = [d for _, m, f in _files.values() if m.split('.')[0] == top for d in f.get(attr, []) if d['kind'] != 'method']
+            found = [d for _, m, f in _within(sources) if m.split('.')[0] == top for d in f.get(attr, []) if d['kind'] != 'method']
         return found[:5]

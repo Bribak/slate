@@ -19,8 +19,10 @@
     <section id="search-view" class="view hidden">
       <div class="search-box">
         <input id="search-input" placeholder="Find in all folders" spellcheck="false">
+        <datalist id="motif-names"></datalist>
         <button id="search-case" class="toggle" title="Match case">Aa</button>
         <button id="search-regex" class="toggle" title="Regular expression">.*</button>
+        <button id="search-glycan" class="toggle" title="Glycans holding a motif (SialylLewisX), a substructure (Neu5Ac(a2-3)Gal) or a glyco-regex (Hex-HexNAc)">⬡</button>
       </div>
       <div id="search-status"></div>
       <div id="search-results"></div>

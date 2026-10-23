@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from slate import __version__, fonts, glycans, hints, instance, navigate, pythons, repl, state, style, system, update, usage, workspace
+from slate import __version__, fonts, glycans, hints, instance, libraries, navigate, pythons, repl, state, style, system, update, usage, workspace
 from slate.system import MAC, native
 
 WEB = Path(__file__).with_name('web')
@@ -176,16 +176,38 @@ class Api:
     def format(self, path, text):
         return style.format_source(path, text, self._state.get('style_script'))
 
+    def _libraries(self, path, roots):
+        """{package: folder} of glycowork and CandyCrunch as installed for the Python that runs path's project (the console's
+        running one for the console), when their checkouts are not open (slate/libraries.py)."""
+        root = next((r for r in roots if project_key(path or '').startswith(project_key(r) + '\\')), None) if path else None
+        python = (self._console.python if path is None else None) or self._python_for(root)
+        return libraries.installed(str(repl.Console.executable(python)), list(roots))
+
     def hints(self, path, name, qualifier = None, roots = (), console = None):
         """Signatures and docstrings for a call or a name, from the open projects' own code (slate/hints.py)."""
-        return hints.lookup(path, name, qualifier = qualifier, roots = list(roots), console = console)
+        return hints.lookup(path, name, qualifier = qualifier, roots = list(roots), console = console, libraries = self._libraries(path, roots))
 
     def goto(self, path, text, line, col, roots):
-        return navigate.goto(path, text, line, col, roots)
+        return navigate.goto(path, text, line, col, roots, libraries = self._libraries(path, roots))
 
     def glycans(self, names, roots = ()):
         """GlycoDraw's drawings of glycans written in the code, from the console's Python (slate/glycans.py)."""
         return self._drawer.draw(list(names), self._state.get('console_python'), list(roots))
+
+    def glycan_info(self, glycan, roots = ()):
+        """The hover card: canonical form, mass, composition, class and glycowork's motifs (slate/glycan_child.py)."""
+        return self._drawer.request({'op': 'info', 'glycan': glycan}, self._state.get('console_python'), list(roots))
+
+    def glycan_check(self, path, text, roots = ()):
+        """Diagnostics with quick fixes for the glycans written as values in a file (slate/glycans.py, `literals`)."""
+        return glycans.diagnostics(self._drawer, path, text, self._state.get('console_python'), list(roots))
+
+    def glycan_search(self, roots, query):
+        """Find-in-files results for the glycans in the open folders that hold a motif, substructure or glyco-regex."""
+        return glycans.search(self._drawer, list(roots), query, self._state.get('console_python'), list(roots))
+
+    def glycan_motifs(self, roots = ()):
+        return self._drawer.request({'op': 'motifs'}, self._state.get('console_python'), list(roots)).get('motifs', [])
 
     # console
     def _python_for(self, root):

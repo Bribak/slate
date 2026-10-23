@@ -11,7 +11,7 @@ import tokenize
 import warnings
 from pathlib import Path
 
-from slate import hints, state
+from slate import glycans, hints, state
 
 DEFAULT_SCRIPT = Path.home() / 'Documents' / 'glycowork' / '.github' / 'scripts' / 'check_style.py'
 _modules, _signatures = {}, {}
@@ -134,6 +134,7 @@ def _lint(path, source, fallback):
     if tree is None:
         return {'markers': markers}
     hints.remember(path, tree, source)  # the tree is at hand, and a call being typed later will not parse
+    glycans.remember(path, source, tree)  # for the glycan check the page asks for right after
     root, script = find_script(path, fallback = fallback)
     if script is None:
         return {'markers': markers, 'note': 'no check_style.py found'}

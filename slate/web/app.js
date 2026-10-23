@@ -164,14 +164,16 @@ async function init(saved) {
     wordBasedSuggestions: 'allDocuments', definitionLinkOpensInPeek: false, 'semanticHighlighting.enabled': false,
   });
   registerProviders();
+  registerGlycanFixes();
   setupRunning();
   setupGlycans(saved);
   editor.onDidChangeCursorSelection(updateStatusPos);
   editor.onDidChangeModelContent(() => persist());
   S.roots = saved.roots || [];
   if (!saved.roots) {  // first run: the folders slate was built around, when they exist
-    for (const name of ['glycowork', 'candycrunch']) {
+    for (const name of ['glycowork', 'candycrunch', 'CandyCrunch']) {  // a Mac's paths can be case-sensitive, and the repository is CandyCrunch
       const p = join(join(S.home, 'Documents'), name);
+      if (S.roots.some((r) => keyOf(r) === keyOf(p))) continue;
       try { await api.list_dir(p); S.roots.push(p); S.expanded.add(keyOf(p)); } catch (e) { /* not on this machine */ }
     }
   }
@@ -308,6 +310,7 @@ function activate(tab, {mru = true} = {}) {
   if (mru) S.mru = [tab.key, ...S.mru.filter((k) => k !== tab.key)];
   editor.setModel(tab.model);
   if (!tab.linted && tab.model.getLanguageId() === 'py') lint(tab);  // ahead of the background tabs still queued
+  else if (tab.model.getLanguageId() === 'py') checkGlycans(tab);  // linted in the background, when glycan diagnostics wait for the front tab
   if (tab.viewState) editor.restoreViewState(tab.viewState);
   editor.focus();
   $('empty').classList.add('hidden');
@@ -605,7 +608,7 @@ async function lint(tab) {
   tab.blankDecos = model.deltaDecorations(tab.blankDecos || [], result.markers.filter((m) => m.code === 'GW1').map((m) => ({
     range: new monaco.Range(m.line, 1, m.line, 1), options: {isWholeLine: true, linesDecorationsClassName: 'gw1-gutter'}})));
   updateTabEl(tab);
-  if (tab === S.active) updateStatus();
+  if (tab === S.active) { updateStatus(); checkGlycans(tab); }
 }
 
 // ---------------------------------------------------------------- hints: signatures and docstrings of the projects' own code (slate/hints.py)
@@ -752,7 +755,47 @@ function registerProviders() {
 const GLYCAN_STRING = /(['"])([A-Za-z[{][A-Za-z0-9?\-()[\]{},.|/ ]*?)\1/g;
 const LINKAGE = /\([abo?][\d?]?-[\d?][\d?|/,]*\)/;
 const GLYCANS_KEPT = 300;  // drawings, most recently shown first; each is about 11 KB of data URLs
-const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, off: false, count: 0};
+const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, colors: null, off: false, noProcess: false, count: 0, cards: new Map()};
+
+// SNFG colours by monosaccharide, as glycowork's GlycoDraw colours them (motif/draw.py sugar_dict), lightened for Darcula's
+// dark background. A residue takes the colour of the longest name it starts with: GlcNAc6S is a GlcNAc, Neu5Ac9Ac a Neu5Ac.
+const SNFG = {
+  white: 'Assigned Unknown dHexNAc HexNAc blank ddHex ddNon HexA HexN Hexf Penf dHex dNon Hex Pen',
+  blue: 'GlcfNAc GlcNAc QuiNAc Apif GlcA GlcN Glcf Api Bac Glc Oli Qui',
+  green: 'LDManHep ManfNAc ManNAc RhaNAc Araf Fruf ManA ManN Manf Rhaf Ara Fru Kdn Man Pse Rha Tyv',
+  yellow: 'GalfNAc GalNAc GalA GalN Galf Kdof Lyxf Tagf Gal Kdo Leg Lyx Tag',
+  orange: '6dGul GulNAc GulA GulN Sorf Xylf Abe Dha Gul Sor Xyl',
+  pink: '6dAltNAc DDManHep 6dAltf AltNAc 6dAlt AltA AltN Altf Parf Psif Ribf Aci Alt Par Psi Rib',
+  purple: 'AllNAc MurNAc Neu5Ac AllA AllN All Dig',
+  lightblue: '6dTalNAc 6dTalf MurNGc Neu5Gc TalNAc 4eLeg 6dTal TalA TalN Col Tal',
+  brown: 'IdoNAc IdoA IdoN Ido Mur Neu',
+  red: 'FucfNAc FucNAc Fucf Fuc Sia',
+};
+const SNFG_NAMES = Object.entries(SNFG).flatMap(([color, names]) => names.split(' ').map((n) => [n, color])).sort((a, b) => b[0].length - a[0].length);
+const snfgColor = (residue) => (SNFG_NAMES.find(([n]) => residue.replace(/^[DL]-/, '').startsWith(n)) || [])[1];
+
+// Inline decorations colouring a glycan string's residues by SNFG colour and dimming its linkages: [range, class] pairs.
+function snfgRuns(line, from, text) {
+  const runs = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '(') {
+      const close = text.indexOf(')', i);
+      const end = close < 0 ? text.length : close + 1;
+      runs.push([from + i, from + end, 'snfg-link']);
+      i = end;
+    } else if ('[]{}'.includes(text[i])) {
+      i++;
+    } else {
+      let end = i;
+      while (end < text.length && !'()[]{}'.includes(text[end])) end++;
+      const color = snfgColor(text.slice(i, end));
+      if (color) runs.push([from + i, from + end, 'snfg-' + color]);
+      i = end;
+    }
+  }
+  return runs.map(([s, e, cls]) => ({range: new monaco.Range(line, s, line, e), options: {description: 'snfg', inlineClassName: cls}}));
+}
 
 function glycansIn(model, from, to) {
   const out = [];
@@ -798,9 +841,11 @@ function showGlycans(found) {
 // Glycans on the visible lines and 30 either side: the 2,167 in glycowork's test_core_functions.py would take 4 s to draw at once
 const refreshGlycans = debounce(async () => {
   const model = editor.getModel(), ranges = editor.getVisibleRanges();
-  if (glycans.off || !model || model.getLanguageId() !== 'py' || !ranges.length) { glycans.decorations.clear(); return; }
+  if (glycans.off || !model || model.getLanguageId() !== 'py' || !ranges.length) { glycans.decorations.clear(); glycans.colors.clear(); return; }
   const from = Math.max(1, ranges[0].startLineNumber - 30), to = Math.min(model.getLineCount(), ranges[ranges.length - 1].endLineNumber + 30);
   const found = glycansIn(model, from, to);
+  glycans.colors.set(found.flatMap((f) => snfgRuns(f.line, f.start + 1, f.glycan)));  // f.start is the opening quote
+  if (glycans.noProcess) return;
   showGlycans(found);
   const missing = [...new Set(found.map((f) => f.glycan))].filter((g) => !glycans.drawn.has(g) && !glycans.waiting.has(g));
   if (!missing.length) return;
@@ -809,12 +854,13 @@ const refreshGlycans = debounce(async () => {
   try { drawn = await api.glycans(missing, S.roots); } catch (e) { drawn = {error: errMsg(e)}; }
   missing.forEach((g) => glycans.waiting.delete(g));
   if (drawn.error) {
-    glycans.off = true;
+    glycans.noProcess = true;  // the colours stay: they need no glycowork
     glycans.decorations.clear();
     toast(`No glycan drawings this session: ${drawn.error}`);
     return;
   }
   for (const [g, svgs] of Object.entries(drawn)) glycans.drawn.set(g, svgs && glycanDrawing(svgs));
+  if (S.active && S.active.glycanPending) { S.active.glycanPending = false; checkGlycans(S.active); }
   for (const [g, d] of glycans.drawn) {
     if (glycans.drawn.size <= GLYCANS_KEPT) break;
     glycans.drawn.delete(g);
@@ -826,18 +872,75 @@ const refreshGlycans = debounce(async () => {
 function setupGlycans(saved) {
   glycans.off = saved.glycan_drawings === false;
   glycans.decorations = editor.createDecorationsCollection();
+  glycans.colors = editor.createDecorationsCollection();
   editor.onDidChangeModel(refreshGlycans);
   editor.onDidChangeModelContent(refreshGlycans);
   editor.onDidScrollChange((e) => e.scrollTopChanged && refreshGlycans());
   editor.onDidLayoutChange(refreshGlycans);
   monaco.languages.registerHoverProvider('py', {
-    provideHover(model, position) {
-      const f = glycans.off ? null : glycansIn(model, position.lineNumber, position.lineNumber).find((g) => position.column >= g.start && position.column <= g.end);
+    async provideHover(model, position) {
+      const f = glycans.off || glycans.noProcess ? null : glycansIn(model, position.lineNumber, position.lineNumber).find((g) => position.column >= g.start && position.column <= g.end);
       const d = f && glycans.drawn.get(f.glycan);
       if (!d) return null;
       const scale = Math.min(1, 480 / d.size[0], 360 / d.size[1]);
+      const card = await Promise.race([glycanCard(f.glycan), new Promise((r) => setTimeout(() => r(''), 400))]);
       return {range: new monaco.Range(f.line, f.start, f.line, f.end),
-        contents: [{value: `![SNFG drawing](${d.full}|width=${Math.round(d.size[0] * scale)},height=${Math.round(d.size[1] * scale)})`}]};
+        contents: [{value: `![SNFG drawing](${d.full}|width=${Math.round(d.size[0] * scale)},height=${Math.round(d.size[1] * scale)})`},
+          ...(card ? [{value: card, isTrusted: true}] : [])]};
+    },
+  });
+  monaco.editor.registerCommand('slate.motifSearch', (accessor, motif) => searchMotif(motif));
+}
+
+// The hover card under a glycan's drawing (Api.glycan_info): class, mass, composition, glycowork's motifs (each a link
+// to the glycans holding it) and the canonical form when it differs. Cached per glycan, the newest GLYCANS_KEPT.
+const GLYCAN_CLASS = {N: 'N-glycan', O: 'O-glycan', free: 'Free glycan', lipid: 'Glycolipid glycan', repeat: 'Repeat unit'};
+function glycanCard(glycan) {
+  if (!glycans.cards.has(glycan)) {
+    glycans.cards.set(glycan, api.glycan_info(glycan, S.roots).then((info) => {
+      if (!info || info.error) return info && info.error ? `glycowork cannot read this glycan: ${escapeMd(info.error)}` : '';
+      const lines = [[GLYCAN_CLASS[info.class] && `**${GLYCAN_CLASS[info.class]}**`, info.mass && `${info.mass.toFixed(4)} Da monoisotopic`].filter(Boolean).join(' · ')];
+      if (info.composition) lines.push(Object.entries(info.composition).map(([k, v]) => `${k} ${v}`).join(' · '));
+      if (info.motifs && info.motifs.length) {
+        const link = (m) => `[${escapeMd(m)}](command:slate.motifSearch?${encodeURIComponent(JSON.stringify([m]))} "Find the glycans holding ${m}")`;
+        lines.push('Motifs: ' + info.motifs.map(link).join(', '));
+      }
+      if (info.canonical && info.canonical !== glycan) lines.push(`glycowork writes it \`${info.canonical}\``);
+      return lines.filter(Boolean).join('  \n');
+    }, () => ''));
+    for (const g of glycans.cards.keys()) { if (glycans.cards.size <= GLYCANS_KEPT) break; glycans.cards.delete(g); }
+  }
+  return glycans.cards.get(glycan);
+}
+
+const escapeMd = (s) => String(s).replace(/[\\`*_[\]()<>#|]/g, (c) => '\\' + c);
+
+// Diagnostics for the glycans written as values in the front file (Api.glycan_check: not in tests, regexes, .replace and
+// the like), with quick fixes: IUPAC-condensed for another notation, glycowork's branch order. Hints, not squiggles,
+// except for a glycan glycowork cannot read.
+async function checkGlycans(tab) {
+  if (glycans.off || glycans.noProcess || tab !== S.active || tab.model.isDisposed()) return;
+  const model = tab.model, version = model.getVersionId();
+  let found;
+  try { found = await api.glycan_check(tab.path, model.getValue(monaco.editor.EndOfLinePreference.LF), S.roots); } catch (e) { return; }
+  if (model.isDisposed() || model.getVersionId() !== version) return;
+  tab.glycanPending = found === null;  // no drawing process yet: checked once a glycan on screen is drawn (refreshGlycans)
+  if (found === null) return;
+  tab.glycanFixes = new Map(found.filter((d) => d.fix).map((d) => [`${d.line}:${d.start}`, d]));
+  monaco.editor.setModelMarkers(model, 'glycan', found.map((d) => ({
+    severity: d.severity === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Hint, message: d.message, source: 'glycowork',
+    startLineNumber: d.line, startColumn: d.start, endLineNumber: d.line, endColumn: d.end})));
+}
+
+function registerGlycanFixes() {
+  monaco.languages.registerCodeActionProvider('py', {
+    provideCodeActions(model, range, context) {
+      const tab = S.tabs.find((t) => t.model === model);
+      const actions = context.markers.filter((m) => m.source === 'glycowork').map((m) => [m, tab && tab.glycanFixes && tab.glycanFixes.get(`${m.startLineNumber}:${m.startColumn}`)])
+        .filter(([, d]) => d).map(([m, d]) => ({title: `${d.title}: ${d.fix}`, kind: 'quickfix', diagnostics: [m], isPreferred: true,
+          edit: {edits: [{resource: model.uri, versionId: model.getVersionId(),
+            textEdit: {range: new monaco.Range(m.startLineNumber, m.startColumn, m.endLineNumber, m.endColumn), text: d.fix}}]}}));
+      return {actions, dispose() {}};
     },
   });
 }
@@ -1136,7 +1239,17 @@ async function pickFinder(idx) {
 // ---------------------------------------------------------------- find in files
 
 let searchSeq = 0;
-const search = {case: false, regex: false};
+const search = {case: false, regex: false, glycan: false};
+
+// Find the glycans holding a motif from the hover card, through the Search view's glycan mode.
+function searchMotif(motif) {
+  search.glycan = true;
+  $('search-glycan').classList.add('on');
+  glycanMode();
+  showView('search');
+  $('search-input').value = motif;
+  runSearch();
+}
 
 async function runSearch() {
   const q = $('search-input').value;
@@ -1146,14 +1259,15 @@ async function runSearch() {
   $('search-status').textContent = 'Searching…';
   let r;
   try {
-    r = await api.search(S.roots, q, search.regex, search.case);
+    r = search.glycan ? await api.glycan_search(S.roots, q) : await api.search(S.roots, q, search.regex, search.case);
   } catch (e) {
     if (seq === searchSeq) $('search-status').textContent = errMsg(e);
     return;
   }
   if (seq !== searchSeq) return;
   results.innerHTML = '';
-  $('search-status').textContent = `${r.matches.length} matching line${r.matches.length === 1 ? '' : 's'} in ${r.files} file${r.files === 1 ? '' : 's'}${r.truncated ? ' (stopped at 2000)' : ''}`;
+  $('search-status').textContent = `${r.matches.length} matching line${r.matches.length === 1 ? '' : 's'} in ${r.files} file${r.files === 1 ? '' : 's'}${r.truncated ? ' (stopped at 2000)' : ''}`
+    + (search.glycan ? ` · ${r.glycans} glycan${r.glycans === 1 ? '' : 's'} hold it` : '');
   let current = null;
   for (const m of r.matches) {
     if (m.path !== current) {
@@ -1174,6 +1288,19 @@ async function runSearch() {
     row.addEventListener('click', () => openFile(m.path, {line: m.line, col: m.start + 1, endCol: m.end + 1}));
     results.append(row);
   }
+}
+
+// In glycan mode the query is a motif name (suggested from glycowork's list), a glycan substructure or a glyco-regex.
+async function glycanMode() {
+  const input = $('search-input');
+  input.placeholder = search.glycan ? 'Glycans with motif, substructure or glyco-regex' : 'Find in all folders';
+  if (search.glycan) input.setAttribute('list', 'motif-names');
+  else input.removeAttribute('list');  // motif names are no suggestions for plain text
+  $('search-case').disabled = $('search-regex').disabled = search.glycan;
+  if (!search.glycan || $('motif-names').childElementCount) return;
+  let names = [];
+  try { names = await api.glycan_motifs(S.roots); } catch (e) { return; }
+  $('motif-names').append(...names.map((n) => { const o = el('option'); o.value = n; return o; }));
 }
 
 function showView(view) {
@@ -1864,8 +1991,8 @@ function bindUi() {
   const searchSoon = debounce(runSearch, 350);
   $('search-input').addEventListener('input', searchSoon);
   $('search-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
-  for (const opt of ['case', 'regex']) {
-    $('search-' + opt).onclick = (e) => { search[opt] = !search[opt]; e.target.classList.toggle('on', search[opt]); runSearch(); };
+  for (const opt of ['case', 'regex', 'glycan']) {
+    $('search-' + opt).onclick = (e) => { search[opt] = !search[opt]; e.target.classList.toggle('on', search[opt]); glycanMode(); runSearch(); };
   }
   $('st-settings').onclick = openSettings;
   $('st-lint').onclick = () => { if (S.active) { editor.focus(); editor.trigger('status', 'editor.action.marker.nextInFiles'); } };

@@ -22,7 +22,7 @@ state.STATE_FILE = HOME / 'state.json'
 PROJECT = HOME / 'project'
 PROJECT.mkdir()
 DEMO = PROJECT / 'demo.py'
-DEMO.write_text('# %% first\nimport os\nvalue = 6 * 7\nprint("smoke", value, os.path.basename(os.getcwd()))\n\n# %% second\npattern = "\\d"\n1 / 0\n',
+DEMO.write_text('# %% first\nimport os\nvalue = 6 * 7\nprint("smoke", value, os.path.basename(os.getcwd()))\n\n# %% second\npattern = "\\d"\n1 / 0\nglycan = "Neu5Ac(a2-3)Gal(b1-4)GlcNAc"\n',
                 encoding = 'utf-8')  # "\d" is a SyntaxWarning, which slate marks without any check_style.py
 OTHER = PROJECT / 'other.py'
 OTHER.write_text('x = 1\n', encoding = 'utf-8')
@@ -74,6 +74,8 @@ def probe(window):
 def run(window):
     check('page ready', until(window, 'typeof S !== "undefined" && S.ready && !!S.active && S.active.path'), expect = str(DEMO))
     check('platform seen by the page', json.loads(js(window, 'JSON.stringify([S.mac, S.sep])') or 'null'), expect = [MAC, '/' if MAC else '\\'])
+    colors = "S.active.model.getAllDecorations().map((d) => d.options.inlineClassName).filter((c) => /^snfg-(purple|yellow|blue)$/.test(c || '')).length"
+    check('glycan residues in SNFG colours', until(window, colors, wait = 10), expect = 3)  # page only, so without glycowork too; only the front file has them
     check('lint marks the SyntaxWarning', until(window, "S.active.linted && (S.active.markers || []).some((m) => m.line === 7) && 1"), expect = 1)  # also style findings where a glycowork checkout is
     check('cells marked', js(window, "S.active.model.getAllDecorations().filter((d) => d.options.className === 'cell-head').length"), expect = 2)
     js(window, 'editor.setPosition({lineNumber: 2, column: 1}) || runAtCursor(true) || 1')
