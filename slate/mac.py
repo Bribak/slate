@@ -4,11 +4,17 @@ brings PyObjC.
 pywebview's Cocoa backend needs three changes, made by `prepare` before the window exists:
 * Its WKWebView subclass answers Cmd+Z, Cmd+A, Cmd+W and Cmd+Q itself, before the page sees them, so Monaco's undo and
   select-all never ran, Cmd+W closed the whole window instead of a tab, and Cmd+Q quit without asking about unsaved
-  files. Those keys now go to the page first, as in Safari; Cmd+Q closes the window the way its close button does.
-* Its app delegate has no application:openFiles:, which Finder and the Dock use to hand an app files.
+  files. A local event monitor now hands those keys to WKWebView's own keyDown: (the page first, as in Safari) before
+  pywebview's sees them; Cmd+Q closes the window the way its close button does. That class cannot be subclassed: its
+  methods call super(BrowserView.WebKitHost, self), which looks the class up by name, so a subclass put in its place made
+  every such call recurse into itself.
+* Its app delegate has no application:openFiles:, which Finder and the Dock use to hand an app files. Its methods use no
+  such super, so a subclass takes its place.
 * The menu bar would say "Python", the name of the process's bundle.
 """
 import os
+
+_monitor = None  # the key monitor, kept alive for the life of the app
 
 
 def allow_foreground(pid):
@@ -33,18 +39,31 @@ def prepare(open_paths, quitting):
     import AppKit
     import objc
     from webview.platforms import cocoa
+    global _monitor
     host = cocoa.BrowserView.WebKitHost
-    page_first = {'z', 'a', 'w'}
+    forwarded = set()  # (timestamp, key code) of keys handed to the page, which WebKit sends again if the page leaves them
 
-    class SlateWebKitHost(host):
-        def keyDown_(self, event):
-            if event.modifierFlags() & AppKit.NSEventModifierFlagCommand:
-                key = (event.charactersIgnoringModifiers() or '').lower()
-                if key in page_first:
-                    return objc.super(host, self).keyDown_(event)  # WKWebView's own: the page first, the menus if it does not take the key
-                if key == 'q':
-                    return self.window().performClose_(event)  # asks about unsaved files, and closing the only window ends slate
-            return objc.super(SlateWebKitHost, self).keyDown_(event)
+    def key_down(event):
+        """None to swallow the event, which went to the page or closed the window; the event to let AppKit route it."""
+        if not event.modifierFlags() & AppKit.NSEventModifierFlagCommand:
+            return event
+        key = (event.charactersIgnoringModifiers() or '').lower()
+        view = next((i.webview for i in list(cocoa.BrowserView.instances.values()) if i.window == event.window()), None)
+        if view is None or key not in ('z', 'a', 'w', 'q'):
+            return event
+        if key == 'q':
+            view.window().performClose_(None)  # asks about unsaved files, and closing the only window ends slate
+            return None
+        stamp = (event.timestamp(), event.keyCode())
+        if stamp in forwarded:  # the page did not take it: now the menus (Select All outside the editor) may
+            forwarded.discard(stamp)
+            return event
+        if len(forwarded) > 100:
+            forwarded.clear()
+        forwarded.add(stamp)
+        objc.super(host, view).keyDown_(event)  # WKWebView's own keyDown:, past pywebview's
+        return None
+    _monitor = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(AppKit.NSEventMaskKeyDown, key_down)
     delegate = cocoa.BrowserView.AppDelegate
 
     class SlateAppDelegate(delegate):
@@ -54,7 +73,6 @@ def prepare(open_paths, quitting):
 
         def applicationWillTerminate_(self, notification):
             quitting()
-    cocoa.BrowserView.WebKitHost = SlateWebKitHost
     cocoa.BrowserView.AppDelegate = SlateAppDelegate
 
 

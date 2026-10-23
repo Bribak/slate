@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from slate import state
 
-HOME = Path(tempfile.mkdtemp(prefix = 'slate-smoke-'))
+HOME = Path(tempfile.mkdtemp(prefix = 'slate-smoke-')).resolve()  # the long path, as slate opens files: TEMP can be a short 8.3 one (RUNNER~1)
 state.STATE_FILE = HOME / 'state.json'
 PROJECT = HOME / 'project'
 PROJECT.mkdir()
