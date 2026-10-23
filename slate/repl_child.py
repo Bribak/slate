@@ -1,4 +1,5 @@
-"""The console's Python process. Reads one JSON line per command ({"code": ..., "id": n}) on stdin and writes JSON lines on stdout.
+"""The console's Python process. Reads one JSON line per command ({"code": ..., "id": n}, plus file, line, text and whole
+for code run from a file in the editor: run_file) on stdin and writes JSON lines on stdout.
 
 Output from print() arrives framed as {"o": text} / {"e": text}; anything written straight to the file descriptors
 (subprocesses, C extensions) arrives unframed and the parent shows it as is. Images arrive as {"img": {mime, data, width,
@@ -137,9 +138,8 @@ def show_rich(value):
     return False
 
 
-def run(code, filename, ns):
-    linecache.cache[filename] = (len(code), None, code.splitlines(True), filename)  # so tracebacks can show the console's own lines
-    tree = ast.parse(code, filename, 'exec')
+def run(code, filename, ns, first_line = 1):
+    tree = ast.parse('\n' * (first_line - 1) + code, filename, 'exec')  # padded, so line numbers (SyntaxErrors' too) are the file's
     last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
     exec(compile(tree, filename, 'exec'), ns)
     if last is not None:
@@ -148,6 +148,30 @@ def run(code, filename, ns):
             ns['_'] = value
             if not show_rich(value):
                 print(repr(value))
+
+
+def run_file(msg, ns):
+    """Code from a file in the editor: a cell or selection starting at msg['line'], or with msg['whole'] the file as a script.
+    As in Spyder and VS Code's interactive window, the working directory becomes the file's folder, which also goes on
+    sys.path for its sibling modules. A script starts with a namespace of its own, as `python file.py` would, and its
+    variables are copied into the console's afterwards, as IPython's %run does."""
+    path = msg['file']
+    folder = os.path.dirname(path)
+    os.chdir(folder)
+    if folder not in sys.path:
+        sys.path.insert(1, folder)  # after '', the working directory
+    text = msg.get('text', msg['code'])
+    linecache.cache[path] = (len(text), None, text.splitlines(True), path)  # tracebacks quote the editor's text, saved or not
+    if not msg.get('whole'):
+        ns['__file__'] = path
+        return run(msg['code'], path, ns, first_line = msg.get('line', 1))
+    script = {'__name__': '__main__', '__file__': path, '__builtins__': builtins}
+    argv, sys.argv = sys.argv, [path]
+    try:
+        exec(compile(msg['code'], path, 'exec'), script)
+    finally:
+        sys.argv = argv
+        ns.update((k, v) for k, v in script.items() if not k.startswith('__'))  # also after an exception, to look at what went wrong
 
 
 def serve_interrupts(server, busy):
@@ -191,7 +215,12 @@ def main():
         msg = json.loads(line)
         busy.set()
         try:
-            run(msg['code'], f"<console-{msg['id']}>", ns)
+            if msg.get('file'):
+                run_file(msg, ns)
+            else:
+                name = f"<console-{msg['id']}>"
+                linecache.cache[name] = (len(msg['code']), None, msg['code'].splitlines(True), name)  # so tracebacks can show the console's own lines
+                run(msg['code'], name, ns)
         except SyntaxError:
             traceback.print_exception(*sys.exc_info()[:2], None)
         except SystemExit:
@@ -200,6 +229,8 @@ def main():
         except BaseException as e:
             traceback.print_exception(type(e), e, user_frames(e.__traceback__))
         finally:
+            if msg.get('file'):
+                linecache.cache.pop(msg['file'], None)  # a module of the same file imported later quotes its saved text
             try:
                 show_figures()
             except Exception as e:

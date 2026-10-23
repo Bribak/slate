@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slate"
-version = "0.1.0"
+dynamic = ["version"]  # slate.__version__, which the update notice compares with GitHub's
 description = "A small Python editor that keeps out of the way of your RAM"
 readme = "README.md"
 authors = [{name = "Daniel Bojar"}]
@@ -13,6 +13,9 @@ dependencies = ["pywebview>=6.2", "jedi>=0.19", "pycodestyle>=2.11"]
 
 [project.gui-scripts]
 slate = "slate.app:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "slate.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["slate*"]

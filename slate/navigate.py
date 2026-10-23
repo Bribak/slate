@@ -8,6 +8,7 @@ objects, and gives up when a newer request arrives or after JEDI_LIMIT seconds.
 """
 import ast
 import keyword
+import os
 import re
 import sys
 import threading
@@ -23,6 +24,7 @@ FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 ASSIGNING = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)
 BRANCHES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try) + ((ast.TryStar,) if hasattr(ast, 'TryStar') else ())
 MAX_DEPTH = 8  # imports and base classes followed in a row
+JEDI_IDLE = 600  # seconds without a jedi lookup before its compiled-module subprocess ends, as the glycan process
 FORGET = 120  # seconds without a request before the parsed trees are dropped (about 20 MB after a few lookups)
 MAX_FILES = 6  # parsed modules kept: a tree takes about 25 times its source (draw.py: 161 KB, 8.6 MB), all 43 package files 115 MB
 Binding = namedtuple('Binding', 'file kind node line offset name')  # where a name gets its value; offset in UTF-8 bytes, as ast counts
@@ -35,6 +37,8 @@ _current = None  # File of the last text asked about
 _running = [None, 0]  # [ticket, deadline] of the jedi lookup in progress
 _watching = False
 _idle = None  # timer that drops the parsed trees when go-to-definition rests
+_jedi_idle = None  # timer that ends jedi's subprocess
+_environment = None  # jedi's Python for its compiled-module subprocess
 
 
 class Superseded(BaseException):
@@ -416,6 +420,26 @@ def forget():
         _current, _done = None, (None, None)
 
 
+def environment():
+    """jedi's Python, whose subprocess imports compiled libraries to inspect them. Its numpy runs OpenBLAS on one thread:
+    by default OpenBLAS reserves about 32 MB per thread on import (717 MB on 22), of which about 10 MB is ever used."""
+    global _environment
+    if _environment is None:
+        import jedi
+        _environment = jedi.create_environment(jedi.get_default_environment().executable, safe = False,
+                                               env_vars = dict(os.environ, OPENBLAS_NUM_THREADS = '1'))  # replaces the whole environment
+    return _environment
+
+
+def stop_jedi():
+    """End jedi's compiled-module subprocess and the libraries it imported; jedi starts a new one on its next lookup,
+    since `_kill` marks the old one crashed. Both are jedi internals, so a jedi that renames them keeps its subprocess."""
+    with _lock:
+        sub = getattr(_environment, '_subprocess', None)
+        if sub is not None and not getattr(sub, 'is_crashed', True) and hasattr(sub, '_kill'):
+            sub._kill()
+
+
 def project_for(path, roots):
     import jedi  # imported on the first jedi lookup: at startup it cost 200 ms before the window appeared
     root = next((r for r in roots if Path(r) in Path(path).parents), str(Path(path).parent))
@@ -472,15 +496,21 @@ def keep_stub_maps():
 
 
 def with_jedi(path, source, line, col, roots, ticket):
+    global _jedi_idle
     import jedi
     watch()
     keep_stub_maps()
     _running[:] = [ticket, time.monotonic() + JEDI_LIMIT]
     try:
-        script = jedi.Script(code = source, path = path, project = project_for(path, roots))
+        script = jedi.Script(code = source, path = path, project = project_for(path, roots), environment = environment())
         names = script.goto(line, col, follow_imports = True) or script.infer(line, col)
     finally:
         _running[:] = [None, 0]
+        if _jedi_idle is not None:
+            _jedi_idle.cancel()
+        _jedi_idle = threading.Timer(JEDI_IDLE, stop_jedi)
+        _jedi_idle.daemon = True
+        _jedi_idle.start()
     out = []
     for n in names:
         if n.module_path is None or n.line is None:

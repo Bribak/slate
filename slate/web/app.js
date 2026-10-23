@@ -157,6 +157,7 @@ async function init(saved) {
     wordBasedSuggestions: 'allDocuments', definitionLinkOpensInPeek: false, 'semanticHighlighting.enabled': false,
   });
   registerProviders();
+  setupRunning();
   setupGlycans(saved);
   editor.onDidChangeCursorSelection(updateStatusPos);
   editor.onDidChangeModelContent(() => persist());
@@ -208,6 +209,7 @@ async function init(saved) {
   drainLints();  // the front tab's check, started by activate, goes first
   setInterval(checkDisk, 2000);
   setInterval(flushUsage, 60000);
+  setTimeout(checkUpdate, 5000);  // well after startup; Python asks GitHub on a thread of its own
   usage.events.push({kind: 'ready', ms: Math.round(performance.now()), tabs: S.tabs.length, roots: S.roots.length, dpr: devicePixelRatio,
     launched: launched.length, file_ms: S.launchedMs});
   addEventListener('resize', debounce(() => {
@@ -260,7 +262,7 @@ async function openFile(path, opts = {}) {
       model.onDidChangeContent(() => onEdit(tab));
       const at = S.active && !opts.background ? S.tabs.indexOf(S.active) + 1 : S.tabs.length;
       S.tabs.splice(at, 0, tab);
-      if (model.getLanguageId() === 'py') lintLater(tab);
+      if (model.getLanguageId() === 'py') { lintLater(tab); markCells(tab); }
     }
   }
   if (opts.background) return tab;
@@ -311,7 +313,7 @@ function activate(tab, {mru = true} = {}) {
 function onEdit(tab) {
   updateTabEl(tab);
   syncDirty();
-  if (tab.model.getLanguageId() === 'py') lintSoon(tab);
+  if (tab.model.getLanguageId() === 'py') { lintSoon(tab); markCellsSoon(tab); }
 }
 
 let lastDirty = false;
@@ -1317,7 +1319,7 @@ function appendOut(text, cls) {
       outLine.dataset.cls = cls;
       out.append(outLine);
     }
-    if (part === '\n' || part === '\r\n') { outLine.textContent += '\n'; outLine = null; }
+    if (part === '\n' || part === '\r\n') { outLine.textContent += '\n'; if (cls === 'e') linkTraceback(outLine); outLine = null; }
     else outLine.textContent += part;
   }
   while (out.childNodes.length > 4000) out.firstChild.remove();
@@ -1362,7 +1364,8 @@ window.slate = {
     for (const [kind, payload] of batch) {
       if (kind === 'o' || kind === 'e') appendOut(payload, kind);
       else if (kind === 'img') appendImage(payload);
-      else if (kind === 'ready') appendOut(`Python ${payload} · variables persist until Restart · Enter runs, Shift+Enter adds a line\n`, 'sys');
+      else if (kind === 'ready') { appendOut(`Python ${payload} · variables persist until Restart · Enter runs, Shift+Enter adds a line\n`, 'sys'); nameConsole(payload); }
+      else if (kind === 'sys') appendOut(payload + '\n', 'sys');
       else if (kind === 'done') consoleBusy = Math.max(0, consoleBusy - 1);
       // exit() sends 'exit' and then 'stopped' with code 0, which needs no second line
       else if (kind === 'exit') appendOut('exit() called; the next command starts a fresh interpreter\n', 'sys');
@@ -1371,6 +1374,26 @@ window.slate = {
     $('console-busy').classList.toggle('hidden', consoleBusy === 0);
   },
 };
+
+// The console's header names the Python it runs: '3.11.5 · glycowork\.venv', or a conda environment's folder.
+function nameConsole(ready) {
+  const m = ready.match(/^(\S+) \((.*)\)$/);
+  if (!m) return;
+  let home = dirname(m[2]);
+  if (basename(home).toLowerCase() === 'scripts') home = dirname(home);
+  const name = /^\.?v?env$/i.test(basename(home)) ? basename(dirname(home)) + '\\' + basename(home) : basename(home);
+  $('console-title').textContent = `Python console · ${m[1]} · ${name}`;
+  $('console-title').title = m[2];
+}
+
+// A traceback's 'File "...", line N' opens the file at that line.
+function linkTraceback(span) {
+  const m = span.textContent.match(/^\s*File "([^"<>]+)", line (\d+)/);
+  if (!m) return;
+  span.classList.add('link');
+  span.title = 'Open at this line';
+  span.addEventListener('click', (ev) => { ev.stopPropagation(); openFile(m[1], {line: +m[2]}); });
+}
 
 function restartConsole() {
   consoleBusy = 0;
@@ -1385,16 +1408,250 @@ function clearConsole() {
   outLine = null;
 }
 
-function toggleConsole(show = !S.consoleOpen) {
+function toggleConsole(show = !S.consoleOpen, focus = true) {
   S.consoleOpen = show;
   layout();
   if (show) {
     if (!consoleStarted) { consoleStarted = true; api.console_restart(consoleCwd(), S.roots); }
-    setTimeout(() => consoleInput.focus(), 0);
+    if (focus) setTimeout(() => consoleInput.focus(), 0);
   } else if (S.active) {
     editor.focus();
   }
   persist();
+}
+
+// ---------------------------------------------------------------- cells, and running code from the editor in the console
+
+// A line starting with '# %%' begins a cell, as in VS Code, Spyder and PyCharm; the lines before the first one are a cell too.
+const CELL_HEAD = '^[ \\t]*#[ \\t]*%%';
+const cellHeads = (model) => model.findMatches(CELL_HEAD, false, true, false, null, false).map((m) => m.range.startLineNumber);
+const linesOf = (model, from, to) => model.getValueInRange(new monaco.Range(from, 1, to, model.getLineMaxColumn(to)), monaco.editor.EndOfLinePreference.LF);
+
+// A rule above each cell, and a ▶ in the gutter that runs it; redrawn 300 ms after typing stops, in Python tabs only.
+function markCells(tab) {
+  tab.cellDecos = tab.model.deltaDecorations(tab.cellDecos || [], cellHeads(tab.model).map((n) => ({range: new monaco.Range(n, 1, n, 1),
+    options: {isWholeLine: true, className: 'cell-head', linesDecorationsClassName: 'cell-run'}})));
+}
+
+function markCellsSoon(tab) {
+  clearTimeout(tab.cellTimer);
+  tab.cellTimer = setTimeout(() => tab.model.isDisposed() || markCells(tab), 300);
+}
+
+// Lines indented as a block (a selection inside a function) run from the left margin; line numbers stay the file's.
+function dedent(code) {
+  const indent = Math.min(...code.split('\n').filter((l) => l.trim()).map((l) => l.match(/^[ \t]*/)[0].length));
+  return indent > 0 && indent < Infinity ? code.split('\n').map((l) => l.slice(Math.min(indent, l.match(/^[ \t]*/)[0].length))).join('\n') : code;
+}
+
+// What Ctrl+Enter runs: the selection (whole lines once it spans several); else the cell at the cursor in a file with
+// cells; else the statement at the cursor: its line, and the next ones while a bracket or block is still open.
+function codeAt(model, sel) {
+  if (!sel.isEmpty()) {
+    if (sel.startLineNumber === sel.endLineNumber) return {code: dedent(model.getValueInRange(sel)), line: sel.startLineNumber, end: sel.endLineNumber};
+    const end = sel.endColumn === 1 ? sel.endLineNumber - 1 : sel.endLineNumber;  // a selection ending at a line's start leaves that line out
+    return {code: dedent(linesOf(model, sel.startLineNumber, end)), line: sel.startLineNumber, end};
+  }
+  const at = sel.positionLineNumber, heads = cellHeads(model);
+  if (heads.length) {
+    const start = heads.filter((n) => n <= at).pop() || 1, next = heads.find((n) => n > at);
+    return {code: linesOf(model, start, next ? next - 1 : model.getLineCount()), line: start, end: next ? next - 1 : model.getLineCount(), cell: true};
+  }
+  let end = at;
+  while (end < model.getLineCount() && needsMoreLines(linesOf(model, at, end))) end++;
+  return {code: dedent(linesOf(model, at, end)), line: at, end};
+}
+
+// Run code of a tab in the console, with the Python set for the tab's project (Api.console_run). Tracebacks give the file's
+// own line numbers, and the console's working directory becomes the file's folder (repl_child.run_file).
+function runInConsole(tab, code, {line = 1, whole = false, what = ''} = {}) {
+  const root = rootIndexOf(tab.path);
+  consoleStarted = true;  // before toggleConsole, which would otherwise start a console of its own alongside this run's
+  if (!S.consoleOpen) toggleConsole(true, false);
+  if (!whole && !code.includes('\n')) {
+    echo(code);
+    if (S.history[S.history.length - 1] !== code) S.history = [...S.history, code].slice(-300);
+  } else {
+    appendOut(`▶ ${basename(tab.path)}${what}\n`, 'run');
+  }
+  consoleBusy++;
+  $('console-busy').classList.remove('hidden');
+  const source = {file: tab.path, line, whole};
+  if (!whole) source.text = tab.model.getValue(monaco.editor.EndOfLinePreference.LF);  // for tracebacks, which quote the editor's lines
+  api.console_run(code, root >= 0 ? S.roots[root] : dirname(tab.path), S.roots, source);
+  persist();
+}
+
+function runAtCursor(advance) {
+  const tab = S.active, model = editor.getModel();
+  if (!tab || model !== tab.model) return;
+  const part = codeAt(model, editor.getSelection());
+  if (part.code.trim()) {
+    const what = part.cell ? `, cell at line ${part.line}` : part.end > part.line ? `, lines ${part.line}-${part.end}` : '';
+    runInConsole(tab, part.code, {line: part.line, what});
+  }
+  if (!advance) return;
+  let next = part.end + 1;  // Shift+Enter goes on to the next cell's first line, or the next line with code
+  if (part.cell) next = Math.min(next + 1, model.getLineCount());
+  else while (next < model.getLineCount() && !model.getLineContent(next).trim()) next++;
+  if (next > model.getLineCount()) next = model.getLineCount();
+  editor.setPosition({lineNumber: next, column: model.getLineFirstNonWhitespaceColumn(next) || 1});
+  editor.revealLine(next);
+}
+
+function runFile() {
+  const tab = S.active;
+  if (!tab || tab.model.getLanguageId() !== 'py') { toast('Open a Python file to run it'); return; }
+  runInConsole(tab, tab.model.getValue(monaco.editor.EndOfLinePreference.LF), {whole: true});
+}
+
+function setupRunning() {
+  const K = monaco.KeyCode, M = monaco.KeyMod;
+  const when = "editorLangId == 'py' && !slateConsole && !editorReadonly && !suggestWidgetVisible";  // see setupConsole: keybindings are page-wide
+  editor.addAction({id: 'slate.run', label: 'Run selection or cell in console', keybindings: [M.CtrlCmd | K.Enter, M.Alt | M.Shift | K.KeyE],
+    precondition: when, contextMenuGroupId: 'slate-run', contextMenuOrder: 1, run: () => runAtCursor(false)});
+  editor.addAction({id: 'slate.runNext', label: 'Run selection or cell, and go on', keybindings: [M.Shift | K.Enter],
+    precondition: when, contextMenuGroupId: 'slate-run', contextMenuOrder: 2, run: () => runAtCursor(true)});
+  editor.addAction({id: 'slate.runFile', label: 'Run file in console (F5)', precondition: "editorLangId == 'py'",
+    contextMenuGroupId: 'slate-run', contextMenuOrder: 3, run: runFile});
+  editor.onMouseDown((e) => {
+    const n = e.target.position && e.target.position.lineNumber;
+    if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS || !n || !S.active) return;
+    if (!new RegExp(CELL_HEAD).test(editor.getModel().getLineContent(n))) return;
+    editor.setPosition({lineNumber: n, column: 1});
+    runAtCursor(false);
+  });
+}
+
+// ---------------------------------------------------------------- settings (Ctrl+Alt+S) and updates
+
+// The settings that took editing state.json by hand. Python keeps them (Api.set_setting); autosave is the page's own.
+async function openSettings() {
+  if ($('settings')) return;
+  let info;
+  try { info = await api.settings(S.roots); } catch (e) { toast(errMsg(e)); return; }
+  const v = info.values, box = el('div'), body = el('div', 'settings-body');
+  box.id = 'settings';
+  const head = el('div', 'diff-head');
+  const closeButton = el('button', null, '✕');
+  head.append(el('span', 'diff-title', 'Settings'), el('span', 'spacer'), closeButton);
+  box.append(head, body);
+  const section = (title) => body.append(el('div', 'settings-section', title));
+  const row = (label, control, note) => {
+    const r = el('label', 'settings-row');
+    r.append(el('span', 'settings-label', label), control);
+    if (note) r.append(el('span', 'settings-note', note));
+    body.append(r);
+    return r;
+  };
+  const check = (label, on, change, note) => {
+    const c = el('input');
+    c.type = 'checkbox';
+    c.checked = on;
+    c.onchange = () => change(c.checked);
+    const r = row('', c, note);
+    r.querySelector('.settings-label').remove();
+    c.after(el('span', null, label));
+    return c;
+  };
+  const set = (key, value) => api.set_setting(key, value).catch((e) => toast(errMsg(e)));
+
+  section('Python console');
+  const pythons = info.pythons, own = info.own;
+  const pythonSelect = (current, first) => {
+    const s = el('select');
+    const option = (value, text, title) => { const o = el('option', null, text); o.value = value; o.title = title || value; s.append(o); };
+    option('', first, own);
+    for (const p of pythons) option(p.path, `${p.label}${p.version ? ' · ' + p.version : ''}`, p.path);
+    if (current && !pythons.some((p) => keyOf(p.path) === keyOf(current))) option(current, current);
+    option('?', 'Browse…');
+    s.value = current ? (pythons.find((p) => keyOf(p.path) === keyOf(current)) || {path: current}).path : '';
+    s.dataset.value = s.value;
+    s.title = s.value || own;
+    return s;
+  };
+  const choose = async (s, store) => {
+    let value = s.value;
+    if (value === '?') {
+      value = await api.pick_python();
+      if (!value) { s.value = s.dataset.value; return; }
+      if (![...s.options].some((o) => o.value === value)) { const o = el('option', null, value); o.value = value; s.insertBefore(o, s.lastChild); }
+      s.value = value;
+    }
+    s.dataset.value = value;
+    s.title = value || own;
+    await store(value || null);
+    $('settings-restart').classList.remove('hidden');
+  };
+  const fallback = pythonSelect(v.console_python, `slate's own (${S.python})`);
+  fallback.onchange = () => choose(fallback, (value) => set('console_python', value));
+  row('Default', fallback);
+  const perProject = {...(v.console_pythons || {})};
+  for (const root of new Map(S.roots.map((r) => [keyOf(r), r])).values()) {
+    const s = pythonSelect(perProject[keyOf(root)], 'Default');
+    s.onchange = () => choose(s, (value) => {
+      if (value) perProject[keyOf(root)] = value;
+      else delete perProject[keyOf(root)];
+      return set('console_pythons', Object.keys(perProject).length ? {...perProject} : null);
+    });
+    row(basename(root), s).querySelector('.settings-label').style.color = rootColor(rootIndexOf(root));
+  }
+  const restart = el('button', null, 'Restart the console now');
+  restart.id = 'settings-restart';
+  restart.className = 'hidden';
+  restart.onclick = () => { restart.classList.add('hidden'); if (!S.consoleOpen) toggleConsole(true, false); restartConsole(); };
+  body.append(el('div', 'settings-note', "A project's Python runs code from its files (Ctrl+Enter, F5) and the console when it starts or restarts with one of its files in front. Any Python 3.8 or newer works; packages come from it."), restart);
+
+  section('Editor');
+  check('Save changed files when slate loses focus', S.autosave, (on) => { S.autosave = on; persist(); });
+  check('Glycan drawings next to glycans in the code', !glycans.off && v.glycan_drawings !== false, (on) => {
+    glycans.off = !on;
+    set('glycan_drawings', on ? null : false);
+    refreshGlycans();
+  }, 'GlycoDraw, from the default Python above or a glycowork folder');
+  const style = el('input');
+  style.placeholder = 'Documents\\glycowork\\.github\\scripts\\check_style.py';
+  style.value = v.style_script || '';
+  style.spellcheck = false;
+  style.onchange = async () => { await set('style_script', style.value.trim() || null); if (S.active && S.active.model.getLanguageId() === 'py') lint(S.active); };
+  row('Style checker', style, 'for files outside a project with its own .github/scripts/check_style.py');
+
+  section('slate');
+  check('GPU rendering', v.gpu !== false, (on) => set('gpu', on ? null : false), 'off saves about 100 MB, but typing is slower on high-DPI screens; from the next start');
+  check('Usage log', v.usage_log !== false, (on) => set('usage_log', on ? null : false), 'local only, never sent: python -m slate.usage');
+  check('Check GitHub for a new version once a day', v.update_check !== false, (on) => set('update_check', on ? null : false));
+  body.append(el('div', 'settings-note', `slate ${info.version} · Python ${S.python} · settings are kept in ${info.state_file}`));
+
+  document.body.append(box);
+  const close = () => { box.remove(); removeEventListener('keydown', esc, true); removeEventListener('mousedown', outside, true); if (S.active) editor.focus(); };
+  const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+  const outside = (e) => { if (!box.contains(e.target)) close(); };
+  closeButton.onclick = close;
+  addEventListener('keydown', esc, true);
+  addEventListener('mousedown', outside, true);
+}
+
+// A line in the status bar when GitHub has a newer slate than this one (Api.update_check, at most once a day); a click installs it.
+async function checkUpdate() {
+  let version = null;
+  try { version = await api.update_check(); } catch (e) { return; }
+  if (!version) return;
+  const notice = $('st-update');
+  notice.textContent = `slate ${version} is available`;
+  notice.title = 'Click to install it; it runs from the next start of slate';
+  notice.classList.remove('hidden');
+  notice.onclick = async () => {
+    if (!confirm(`Install slate ${version} now? The open window keeps running this version until slate is restarted.`)) return;
+    notice.onclick = null;
+    notice.textContent = `Installing slate ${version}…`;
+    try {
+      notice.textContent = `slate ${await api.update_install()} installed: restart slate to use it`;
+      notice.title = '';
+    } catch (e) {
+      toast(`The update failed: ${errMsg(e)}`);
+      notice.classList.add('hidden');
+    }
+  };
 }
 
 // ---------------------------------------------------------------- personal extensions
@@ -1551,6 +1808,8 @@ function bindUi() {
     'ctrl+tab': () => mruStep(1), 'ctrl+shift+tab': () => mruStep(-1),
     'ctrl+pagedown': () => cycleTab(1), 'ctrl+pageup': () => cycleTab(-1),
     'alt+shift+l': revealActiveInTree,
+    'f5': runFile, 'shift+f10': runFile,  // F5 also no longer reloads the page
+    'ctrl+alt+s': openSettings,  // PyCharm's
   };
   addEventListener('keydown', (e) => {
     if (!$('finder').classList.contains('hidden')) {
@@ -1579,6 +1838,7 @@ function bindUi() {
   for (const opt of ['case', 'regex']) {
     $('search-' + opt).onclick = (e) => { search[opt] = !search[opt]; e.target.classList.toggle('on', search[opt]); runSearch(); };
   }
+  $('st-settings').onclick = openSettings;
   $('st-lint').onclick = () => { if (S.active) { editor.focus(); editor.trigger('status', 'editor.action.marker.nextInFiles'); } };
   dragSash($('side-sash'), (e) => { S.sidebarWidth = Math.max(140, Math.min(e.clientX, innerWidth - 300)); layout(); });
   dragSash($('console-sash'), (e) => { S.consoleHeight = Math.max(80, Math.min(innerHeight - e.clientY - 22, innerHeight - 150)); layout(); });

@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from slate import __version__, fonts, glycans, hints, install, instance, navigate, repl, state, style, usage, workspace
+from slate import __version__, fonts, glycans, hints, install, instance, navigate, pythons, repl, state, style, update, usage, workspace
 
 WEB = Path(__file__).with_name('web')
 # WebView2 flags, measured with tools/bench.py on a 250% screen (8 tabs, console open): together about 220 MB less than plain GPU
@@ -16,6 +16,7 @@ WEB = Path(__file__).with_name('web')
 # 4 bits per channel (#2B2B2B drawn as #333333), which --disable-rgba-4444-textures undoes; the GPU memory cap saves ~40 MB more.
 LEAN = '--enable-low-end-device-mode --disable-rgba-4444-textures --force-gpu-mem-available-mb=64'
 SOFTWARE = '--disable-gpu --disable-gpu-compositing'
+SETTINGS = ('console_python', 'console_pythons', 'style_script', 'gpu', 'usage_log', 'glycan_drawings', 'update_check')  # set_setting's keys
 MIME_TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.ico': 'image/x-icon', '.png': 'image/png'}
 
 
@@ -36,11 +37,54 @@ class Api:
 
     def save_state(self, new_state):
         new_state = dict(new_state)
-        for key in ('placement', 'style_script', 'gpu', 'console_python', 'usage_log', 'glycan_drawings'):  # set by hand or by Python, never by the page, so a page save must not drop them
+        for key in ('placement', 'update') + SETTINGS:  # set by hand or by Python, never by the page's session saves, which must not drop them
             if key in self._state:
                 new_state[key] = self._state[key]
         self._state = new_state
         state.save(self._state)
+
+    def settings(self, roots = ()):
+        """What the settings panel shows: the values of SETTINGS and the Pythons found on this machine (slate/pythons.py)."""
+        own = Path(sys.executable)
+        return {'values': {key: self._state.get(key) for key in SETTINGS}, 'pythons': pythons.find(list(roots)), 'version': __version__,
+                'own': str(own.with_name('python.exe') if own.name.lower() == 'pythonw.exe' else own), 'state_file': str(state.STATE_FILE)}
+
+    def set_setting(self, key, value):
+        """One of SETTINGS from the settings panel; None removes it, which means the default."""
+        if key not in SETTINGS:
+            raise ValueError(f'{key} is not a setting')
+        if value is None:
+            self._state.pop(key, None)
+        else:
+            self._state[key] = value
+        if key == 'usage_log':
+            usage.enabled = value is not False
+        state.save(self._state)
+
+    def pick_python(self):
+        import webview
+        result = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types = ('Python (python.exe)', 'All files (*.*)'))
+        return result[0] if result else None
+
+    def update_check(self):
+        """The newer version of slate on GitHub, or None. Asks GitHub at most once a day, and never for a checkout installed
+        with pip install -e (slate/update.py)."""
+        source = None if self._state.get('update_check') is False else update.origin()
+        if source is None:
+            return None
+        cache = self._state.get('update') or {}
+        if time.time() - cache.get('checked', 0) > update.EVERY:
+            try:
+                cache = {'checked': round(time.time()), 'latest': update.latest(source)}
+            except OSError:
+                return None  # offline: ask again at the next start
+            self._state['update'] = cache
+            state.save(self._state)
+        return cache['latest'] if update.newer(cache.get('latest')) else None
+
+    def update_install(self):
+        """Install the newest slate with pip; returns the version now installed, which runs from the next start."""
+        return update.install()
 
     def editor_fonts(self):
         return fonts.jetbrains_mono()
@@ -140,14 +184,21 @@ class Api:
         return self._drawer.draw(list(names), self._state.get('console_python'), list(roots))
 
     # console
-    def console_run(self, code, cwd = None, paths = ()):
-        return self._console.run(code, cwd, list(paths), self._state.get('console_python'))
+    def _python_for(self, root):
+        """The console's Python for a project folder: the one set for it, else the default, else None (slate's own)."""
+        own = self._state.get('console_pythons') or {}
+        return (root and own.get(os.path.normcase(os.path.normpath(root)))) or self._state.get('console_python')
+
+    def console_run(self, code, cwd = None, paths = (), source = None):
+        """cwd: the project folder the code belongs to, whose Python runs it. source: {file, line, text, whole} for code from a
+        file in the editor (repl_child.run_file)."""
+        return self._console.run(code, cwd, list(paths), self._python_for(cwd), source)
 
     def console_interrupt(self):
         self._console.interrupt()
 
     def console_restart(self, cwd = None, paths = ()):
-        self._console.start(cwd, list(paths), self._state.get('console_python'))
+        self._console.start(cwd, list(paths), self._python_for(cwd))
 
     def _console_emit(self, batch):
         if self._window is not None:
@@ -204,8 +255,8 @@ def serve_pages():
 
 
 def main():
-    if '--install' in sys.argv or '--uninstall' in sys.argv:
-        return install.install() if '--install' in sys.argv else install.uninstall()
+    if '--install' in sys.argv or '--uninstall' in sys.argv:  # --no-settings: an update refreshing slate.exe (slate/update.py)
+        return install.install('--no-settings' not in sys.argv) if '--install' in sys.argv else install.uninstall()
     paths = [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith('--')]
     if instance.hand_off(paths):
         return  # a slate window is already open and took the files

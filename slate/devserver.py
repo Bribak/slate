@@ -18,6 +18,7 @@ state.STATE_FILE = Path(tempfile.gettempdir()) / 'slate-dev' / 'state.json'  # k
 SHIM = r"""
 window.pywebview = {api: new Proxy({}, {get: (_, name) => async (...args) => {
   if (name === 'pick_folder') return prompt('Folder to add (absolute path)');
+  if (name === 'pick_python') return prompt('python.exe to use (absolute path)');
   const r = await fetch('/api/' + name, {method: 'POST', body: JSON.stringify(args)});
   const j = await r.json();
   if ('error' in j) throw new Error(j.error);

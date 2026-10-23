@@ -20,6 +20,7 @@ class Console:
     def __init__(self, emit):
         self._emit = emit  # emit(list of [kind, payload]); called from a background thread, at most every FLUSH_EVERY seconds
         self._proc, self._port = None, None
+        self.python = None  # the python.exe running now
         self._pending, self._lock = [], threading.Lock()
         self._next_id = 0
         threading.Thread(target = self._flusher, daemon = True).start()
@@ -42,17 +43,22 @@ class Console:
             if batch:
                 self._emit(batch)
 
+    @staticmethod
+    def executable(python = None):
+        """The python.exe that runs for a console Python setting. repl_child.py is stdlib-only, so any Python 3.8+ (a venv, a
+        conda env) can run it; without one, or when it is gone, the Python slate runs on."""
+        python = Path(python) if python and Path(python).is_file() else Path(sys.executable)
+        return python.with_name('python.exe') if python.name.lower() == 'pythonw.exe' else python  # the child needs real stdio pipes
+
     def start(self, cwd = None, paths = (), python = None):
         self.stop()
         env = dict(os.environ, PYTHONIOENCODING = 'utf-8', PYTHONUNBUFFERED = '1')
         env.setdefault('MPLBACKEND', 'module://slate_inline')  # figures in the console (repl_child.py); a backend set by hand wins
         env.setdefault('GLYCOWORK_RICH_DISPLAY', '1')  # GlycoDraw then returns its drawing, which shows itself, rather than a matplotlib figure
         if python and not Path(python).is_file():
-            self._push('e', f'console_python {python} not found; using the Python slate runs on\n')
-            python = None
-        python = Path(python or sys.executable)  # repl_child.py is stdlib-only, so any Python 3.8+ (a venv, a conda env) can run it
-        if python.name.lower() == 'pythonw.exe':
-            python = python.with_name('python.exe')  # the child needs real stdio pipes
+            self._push('e', f'{python} not found; using the Python slate runs on\n')
+        python = self.executable(python)
+        self.python = str(python)
         self._proc = subprocess.Popen([str(python), '-u', str(CHILD), *paths], stdin = subprocess.PIPE, stdout = subprocess.PIPE,
                                       stderr = subprocess.PIPE, cwd = cwd if cwd and os.path.isdir(cwd) else None, env = env,
                                       creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -90,11 +96,16 @@ class Console:
         while chunk := proc.stderr.read1(65536):
             self._push('e', decoder.decode(chunk))
 
-    def run(self, code, cwd = None, paths = (), python = None):
-        if self._proc is None:
+    def run(self, code, cwd = None, paths = (), python = None, source = None):
+        """source: {file, line, text, whole} for code from a file in the editor. Its project's Python runs it: a console running
+        another Python restarts first, since the code imports that project's packages."""
+        if self._proc is not None and source and os.path.normcase(str(self.executable(python))) != os.path.normcase(self.python):
+            self._push('sys', f'Restarting with {self.executable(python)}, the Python set for this project; variables are reset')
+            self.start(cwd, paths, python)
+        elif self._proc is None:
             self.start(cwd, paths, python)
         self._next_id += 1
-        self._send({'code': code, 'id': self._next_id})
+        self._send({'code': code, 'id': self._next_id, **(source or {})})
         return self._next_id
 
     def interrupt(self):
@@ -114,6 +125,6 @@ class Console:
             self._push('stopped', None)
 
     def stop(self):
-        proc, self._proc, self._port = self._proc, None, None
+        proc, self._proc, self._port, self.python = self._proc, None, None, None
         if proc is not None and proc.poll() is None:
             proc.kill()
