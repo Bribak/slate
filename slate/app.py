@@ -160,6 +160,13 @@ class Api:
     def create(self, path, is_dir = False):
         return workspace.create(path, is_dir)
 
+    def rename(self, path, name):
+        return workspace.rename(path, name)
+
+    def trash(self, path):
+        """Move a file or folder to the Recycle Bin or the Trash, from where it can be restored."""
+        native.trash(path)
+
     def list_files(self, roots):
         return workspace.list_files(roots)
 
@@ -190,6 +197,9 @@ class Api:
 
     def goto(self, path, text, line, col, roots):
         return navigate.goto(path, text, line, col, roots, libraries = self._libraries(path, roots))
+
+    def outline(self, text):
+        return navigate.outline(text)
 
     def glycans(self, names, roots = ()):
         """GlycoDraw's drawings of glycans written in the code, from the console's Python (slate/glycans.py)."""

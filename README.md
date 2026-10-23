@@ -81,7 +81,8 @@ Run `python -m slate --install` again after upgrading or moving Python. `python 
 * **PyCharm-style colors and font.** Darcula colors and a Python grammar close to PyCharm's, with `self`, builtins, `def` names, decorators, keyword arguments, docstrings and f-string fields. The font is the JetBrains Mono that ships with PyCharm (or any JetBrains IDE) when one is installed, at PyCharm's default size; otherwise an installed JetBrains Mono, Cascadia Mono or Consolas.
 * **Errors before you run.** Every .py file is compiled as you type, so syntax and indentation errors, `return` outside a function and similar mistakes are underlined in red, the tab name turns red, and the status bar names the error and line. SyntaxWarnings such as an invalid `"\d"` escape are underlined too.
 * **Sharp on every monitor.** Text renders at each monitor's own scaling, and the window keeps its size when moved between a laptop screen and an external monitor. It reopens where it was closed, maximized (zoomed) or not.
-* **Navigation.** Add project folders with **+** in the folder tree; several sit side by side. Ctrl+P finds a file by name across all of them (`name:120` jumps to line 120). Ctrl+Shift+F searches their contents. Ctrl+click or F12 goes to a definition: the open folders' own names (variables, functions, classes, methods, keyword arguments, imports) straight from the syntax tree, library code and attributes of objects through jedi.
+* **Navigation.** Add project folders with **+** in the folder tree; several sit side by side. Ctrl+P finds a file by name across all of them (`name:120` jumps to line 120). Ctrl+Shift+F searches their contents. Ctrl+click or F12 goes to a definition: the open folders' own names (variables, functions, classes, methods, keyword arguments, imports) straight from the syntax tree, library code and attributes of objects through jedi. Ctrl+Alt+Left (or Alt+Left, or the mouse's back button) goes back to where you jumped from, as in PyCharm, and Ctrl+Alt+Right forward again; a jump is a definition, a search result, another tab or a move of ten lines or more, never typing or a click. Ctrl+F12 lists the file's classes and functions to jump to.
+* **Tabs and files.** Right-click a tab to close the others, the ones to its right or all unchanged ones, or to copy its path. Right-click a file or folder in the tree to rename it, which keeps its open tabs, or to delete it to the Recycle Bin (the Trash on macOS).
 * **Console.** Ctrl+\` (Ctrl+Ö or the § key on Nordic keyboards) opens a Python console whose variables persist between runs. Enter runs the input, or adds a line while a block or bracket is still open. Shift+Enter always adds a line, and Ctrl+Enter always runs. Up and Down browse the history. **Interrupt** stops a run. **Restart** forgets all variables.
 * **Running code from the editor.** Ctrl+Enter runs the selection in the console. Without a selection, it runs the cell at the cursor in a file with `# %%` cells, else the statement at the cursor. Shift+Enter does the same and moves on to the next cell or statement, as in Jupyter. F5 (or Shift+F10) runs the whole file as a script. The script starts with a fresh namespace, as `python file.py` would, and its variables stay in the console afterwards, so you can look at them. Each `# %%` line starts a cell, as in VS Code, Spyder and PyCharm. It gets a rule above it and a ▶ in the gutter that runs it. The console's working directory becomes the file's folder, so relative paths and sibling imports work. Tracebacks give the file's own line numbers, and clicking a `File "...", line N` line opens it there.
 * **Figures in the console.** matplotlib and seaborn plots appear below the code that made them: every figure still open at the end of a run, and each `plt.show()`. So does anything that can draw itself for Jupyter. The newest 40 stay; older ones make room. Set `MPLBACKEND` yourself to use another matplotlib backend.
@@ -91,7 +92,7 @@ Run `python -m slate --install` again after upgrading or moving Python. `python 
 
 ## Keys
 
-On macOS, Cmd takes Ctrl's place, as in VS Code: Cmd+P, Cmd+S, Cmd+Enter. Ctrl+\`, Ctrl+Tab and Ctrl+C (interrupt) keep the Ctrl key. Cmd+, also opens the settings, Ctrl+R also runs the file (F5 needs Fn on most Mac keyboards), and Cmd+Option+Left/Right switch tabs. Alt is Option.
+On macOS, Cmd takes Ctrl's place, as in VS Code: Cmd+P, Cmd+S, Cmd+Enter. Ctrl+\`, Ctrl+Tab and Ctrl+C (interrupt) keep the Ctrl key. Cmd+, also opens the settings, Ctrl+R also runs the file (F5 needs Fn on most Mac keyboards), and Cmd+Option+Left/Right switch tabs. Back and forward are Ctrl+- and Ctrl+Shift+-, as in a Mac's VS Code. Alt is Option.
 
 | Key | Action |
 | --- | --- |
@@ -112,6 +113,8 @@ On macOS, Cmd takes Ctrl's place, as in VS Code: Cmd+P, Cmd+S, Cmd+Enter. Ctrl+\
 | Ctrl+Alt+S | settings |
 | Shift+Alt+F | reformat to the coding standard |
 | F12 / Ctrl+click | go to definition |
+| Ctrl+Alt+Left / Ctrl+Alt+Right | back / forward (also Alt+Left / Alt+Right and the mouse's buttons) |
+| Ctrl+F12 | file structure: the file's classes and functions |
 | F8 | next style finding |
 
 Everything else follows VS Code's keys.

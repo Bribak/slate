@@ -561,3 +561,26 @@ def goto(path, source, line, col, roots, libraries = None):
         _idle.daemon = True
         _idle.start()
     return found
+
+
+def outline(source):
+    """The classes and functions of a module for the file structure popup (Ctrl+F12): [{name, kind, line, end, children}],
+    or None when the text does not parse (the page then keeps the last one). Defs under if, try or with count as the
+    level they sit in: glycowork defines fallbacks inside try/except ImportError."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+
+    def symbols(body, in_class):
+        out = []
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                is_class = isinstance(node, ast.ClassDef)
+                out.append({'name': node.name, 'kind': 'class' if is_class else 'method' if in_class else 'function', 'line': node.lineno, 'end': node.end_lineno,
+                            'children': symbols(node.body, is_class)})
+            elif isinstance(node, (ast.If, ast.Try, ast.With, ast.AsyncWith, ast.For, ast.While)):
+                inner = node.body + getattr(node, 'orelse', []) + getattr(node, 'finalbody', []) + [n for h in getattr(node, 'handlers', []) for n in h.body]
+                out += symbols(inner, in_class)
+        return out
+    return symbols(tree.body, False)

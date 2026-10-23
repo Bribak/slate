@@ -1,5 +1,6 @@
 """Check that slate works in a real window, on Windows and macOS: the page, the bridge, linting, the console, running a
-cell, a traceback link, the settings panel, a key, and a second launch handing over a file.
+cell, a traceback link, the settings panel, a key, a second launch handing over a file, and renaming a file (and
+moving one to the Trash on macOS).
 
 python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
 
@@ -92,6 +93,13 @@ def run(window):
     check('second launch hands over a file', instance.hand_off([str(OTHER)]))
     check('handed file opened', until(window, f"S.tabs.some((t) => t.path === {json.dumps(str(OTHER))}) && 1"), expect = 1)
     check('no other tabs', js(window, 'S.tabs.length'), expect = 2)  # on macOS AppKit once also opened smoke.py from the command line
+    spare = PROJECT / 'spare.txt'
+    spare.write_text('spare\n', encoding = 'utf-8')
+    renamed = js(window, f"api.rename({json.dumps(str(spare))}, 'renamed.txt')")
+    check('rename in the tree', renamed and Path(renamed).name == 'renamed.txt' and Path(renamed).is_file() and not spare.exists())
+    if MAC:  # Windows' Recycle Bin is checked by hand: a runner without one would show Windows' delete-for-good question and hang
+        js(window, f"api.trash({json.dumps(str(PROJECT / 'renamed.txt'))}) || 1")
+        check('moved to the Trash', not (PROJECT / 'renamed.txt').exists())
     errors = js(window, "JSON.stringify(usage.events.filter((e) => /error/.test(e.kind)).map((e) => e.call || e.message))")
     check('no page or API errors', json.loads(errors or '["no answer"]'), expect = [])
 

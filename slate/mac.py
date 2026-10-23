@@ -112,3 +112,11 @@ def font_dirs():
                         apps.append(root)
     apps.sort(key = os.path.getmtime, reverse = True)  # the most recently installed IDE first
     return [os.path.join(a, 'Contents', 'jbr', 'Contents', 'Home', 'lib', 'fonts') for a in apps] + [os.path.join(home, 'Library', 'Fonts'), '/Library/Fonts']
+
+
+def trash(path):
+    """Move a file or folder to the Trash, as Finder's Move to Trash does."""
+    from Foundation import NSURL, NSFileManager
+    ok, _, error = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(NSURL.fileURLWithPath_(path), None, None)
+    if not ok:
+        raise OSError(f'{os.path.basename(path)} was not moved to the Trash: {error.localizedDescription() if error else "unknown error"}')

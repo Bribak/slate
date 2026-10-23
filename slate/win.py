@@ -13,6 +13,11 @@ user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
 
 
+class SHFILEOPSTRUCTW(ctypes.Structure):
+    _fields_ = [('hwnd', wintypes.HWND), ('wFunc', wintypes.UINT), ('pFrom', wintypes.LPCWSTR), ('pTo', wintypes.LPCWSTR), ('fFlags', ctypes.c_ushort),
+                ('fAnyOperationsAborted', wintypes.BOOL), ('hNameMappings', ctypes.c_void_p), ('lpszProgressTitle', wintypes.LPCWSTR)]
+
+
 def allow_foreground(pid):
     user32.AllowSetForegroundWindow(pid)  # only the process the user just started may bring a window to the front
 
@@ -89,3 +94,12 @@ def bring_to_front(title):
         if user32.IsIconic(hwnd):
             user32.ShowWindow(hwnd, 9)  # SW_RESTORE: back as it was, maximised or not
         user32.SetForegroundWindow(hwnd)
+
+
+def trash(path):
+    """Move a file or folder to the Recycle Bin without Explorer's dialogs. FOF_WANTNUKEWARNING: where there is no Recycle
+    Bin (a network drive), Windows asks before deleting for good rather than doing it silently."""
+    op = SHFILEOPSTRUCTW(wFunc = 3, pFrom = os.path.abspath(path) + '\0', fFlags = 0x40 | 0x10 | 0x4 | 0x400 | 0x4000)  # FO_DELETE; FOF_ALLOWUNDO, NOCONFIRMATION, SILENT, NOERRORUI, WANTNUKEWARNING
+    error = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if error or op.fAnyOperationsAborted:
+        raise OSError(f'{os.path.basename(path)} was not moved to the Recycle Bin (error {error:#x})')

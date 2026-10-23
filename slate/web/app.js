@@ -159,7 +159,8 @@ async function init(saved) {
   editor = monaco.editor.create($('editor'), {
     model: null, theme: 'darcula', fontFamily: FONT, fontSize: 13, lineHeight: 20,  // PyCharm's defaults: size 13, line spacing 1.2
     automaticLayout: true, minimap: {enabled: false}, scrollBeyondLastLine: false, bracketPairColorization: {enabled: false},
-    guides: {indentation: true, bracketPairs: false}, stickyScroll: {enabled: true}, mouseWheelZoom: true,
+    guides: {indentation: true, bracketPairs: false}, mouseWheelZoom: true,
+    stickyScroll: {enabled: true, defaultModel: 'indentationModel'},  // as before the outline provider: it would show only def and class lines, and ask Python on every edit
     renderWhitespace: 'selection', fixedOverflowWidgets: true, unicodeHighlight: {ambiguousCharacters: false},
     wordBasedSuggestions: 'allDocuments', definitionLinkOpensInPeek: false, 'semanticHighlighting.enabled': false,
   });
@@ -276,8 +277,10 @@ async function openFile(path, opts = {}) {
     }
   }
   if (opts.background) return tab;
-  activate(tab);
-  if (opts.line) revealAt(opts.line, opts.col || 1, opts.endCol);
+  withoutNoting(() => {  // one place for Back, where it lands, not where the tab was first
+    activate(tab);
+    if (opts.line) revealAt(opts.line, opts.col || 1, opts.endCol);
+  });
   return tab;
 }
 
@@ -305,13 +308,18 @@ function revealAt(line, col, endCol) {
 }
 
 function activate(tab, {mru = true} = {}) {
+  const switching = S.active !== tab || editor.getModel() !== tab.model;  // the tab in front keeps its cursor: its viewState is from when it was last left
   if (S.active && S.active !== tab && !S.active.model.isDisposed()) S.active.viewState = editor.saveViewState();
   S.active = tab;
   if (mru) S.mru = [tab.key, ...S.mru.filter((k) => k !== tab.key)];
-  editor.setModel(tab.model);
+  if (switching) {
+    withoutNoting(() => {  // the new model's first cursor and its restored one are one arrival, not two jumps
+      editor.setModel(tab.model);
+      if (tab.viewState) editor.restoreViewState(tab.viewState);
+    });
+  }
   if (!tab.linted && tab.model.getLanguageId() === 'py') lint(tab);  // ahead of the background tabs still queued
   else if (tab.model.getLanguageId() === 'py') checkGlycans(tab);  // linted in the background, when glycan diagnostics wait for the front tab
-  if (tab.viewState) editor.restoreViewState(tab.viewState);
   editor.focus();
   $('empty').classList.add('hidden');
   renderTabs();
@@ -352,9 +360,9 @@ async function save(tab = S.active, quiet = false) {
   emit('saved', tab.path);
 }
 
-function closeTab(tab) {
+function closeTab(tab, {force = false} = {}) {
   if (!tab) return;
-  if (isDirty(tab) && !confirm(`${basename(tab.path)} has unsaved changes. Close it anyway?`)) return;
+  if (!force && isDirty(tab) && !confirm(`${basename(tab.path)} has unsaved changes. Close it anyway?`)) return;
   const i = S.tabs.indexOf(tab);
   S.tabs.splice(i, 1);
   S.mru = S.mru.filter((k) => k !== tab.key);
@@ -390,6 +398,7 @@ function renderTabs() {
     e.append(close);
     e.addEventListener('mousedown', (ev) => { if (ev.button === 1) { ev.preventDefault(); closeTab(tab); } });
     e.addEventListener('click', () => activate(tab));
+    e.addEventListener('contextmenu', (ev) => showMenu(ev, tabMenu(tab)));
     e.draggable = true;
     e.addEventListener('dragstart', (ev) => { ev.dataTransfer.setData('text/slate-tab', tab.key); });
     e.addEventListener('dragover', (ev) => ev.preventDefault());
@@ -406,6 +415,19 @@ function renderTabs() {
     bar.append(e);
   }
   if (S.active && S.active.el) S.active.el.scrollIntoView({block: 'nearest'});
+}
+
+function tabMenu(tab) {
+  const closeAll = (tabs) => tabs.forEach((t) => closeTab(t));  // each unsaved one still asks
+  return [
+    ['Close', () => closeTab(tab)],
+    ['Close others', () => closeAll(S.tabs.filter((t) => t !== tab))],
+    ['Close tabs to the right', () => closeAll(S.tabs.slice(S.tabs.indexOf(tab) + 1))],
+    ['Close unchanged tabs', () => closeAll(S.tabs.filter((t) => !isDirty(t)))],
+    ['Copy path', () => navigator.clipboard.writeText(tab.path)],
+    ['Reveal in folder tree', () => { activate(tab); revealActiveInTree(); }],
+    [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(tab.path)],
+  ];
 }
 
 function updateTabEl(tab) {
@@ -430,6 +452,48 @@ function mruStep(step) {
   mruCycle = (mruCycle + step + S.mru.length) % S.mru.length;
   const tab = S.tabs.find((t) => t.key === S.mru[mruCycle]);
   if (tab) activate(tab, {mru: false});
+}
+
+// ---------------------------------------------------------------- back and forward (PyCharm's Ctrl+Alt+Left/Right)
+
+// Back returns to where a jump left from: a definition, a search or finder result, a traceback link, another tab, or a
+// move of NAV_LINES or more that was not typing, arrow keys or a click (those only move the current place).
+const nav = {back: [], forward: [], here: null, hold: false, moving: false};
+const NAV_KEPT = 50, NAV_LINES = 10;
+
+function notePlace(e) {
+  const tab = S.active, pos = editor.getPosition();
+  if (!tab || !pos || nav.hold || nav.moving || mruCycle !== null || editor.getModel() !== tab.model) return;
+  const place = {path: tab.path, line: pos.lineNumber, col: pos.column}, h = nav.here;
+  const far = h && Math.abs(h.line - place.line) >= NAV_LINES && !(e && (e.source === 'keyboard' || e.source === 'mouse'));
+  if (S.ready && h && (keyOf(h.path) !== tab.key || far)) {
+    nav.back = [...nav.back, h].slice(-NAV_KEPT);
+    nav.forward = [];
+  }
+  nav.here = place;
+}
+
+// Runs fn as one move: the cursor changes inside it note nothing, and the place it ends at is noted once
+function withoutNoting(fn) {
+  const held = nav.hold;
+  nav.hold = true;
+  try { fn(); } finally { nav.hold = held; }
+  if (!held) notePlace();
+}
+
+async function goPlace(step) {
+  const [from, to] = step < 0 ? [nav.back, nav.forward] : [nav.forward, nav.back];
+  const here = nav.here;
+  while (from.length) {
+    const place = from.pop();
+    nav.moving = true;
+    let tab;
+    try { tab = await openFile(place.path, {line: place.line, col: place.col, quiet: true}); } finally { nav.moving = false; }
+    if (!tab) continue;  // a file deleted since
+    if (here) to.push(here);
+    nav.here = place;
+    return;
+  }
 }
 
 // ---------------------------------------------------------------- files changed outside slate (Claude, git, other tools)
@@ -669,7 +733,34 @@ function hintDoc(d, withParams) {
   return parts.filter(Boolean).join('\n\n');
 }
 
+// PyCharm's file structure popup (Ctrl+F12), which is Monaco's quick outline (also Ctrl+Shift+O)
+function fileStructure() {
+  if (!S.active) return;
+  editor.focus();
+  editor.trigger('slate', 'editor.action.quickOutline', {});
+}
+
+const SYMBOL_KIND = () => ({class: monaco.languages.SymbolKind.Class, method: monaco.languages.SymbolKind.Method, function: monaco.languages.SymbolKind.Function});
+
 function registerProviders() {
+  // Classes and functions from Python's ast (navigate.outline), asked for only when the popup opens; text that does not
+  // parse keeps the tab's last outline
+  monaco.languages.registerDocumentSymbolProvider('py', {
+    async provideDocumentSymbols(model) {
+      const tab = S.tabs.find((t) => t.model === model), kind = SYMBOL_KIND(), n = model.getLineCount();
+      let found = null;
+      try { found = await api.outline(model.getValue(monaco.editor.EndOfLinePreference.LF)); } catch (e) { /* the last outline below */ }
+      if (found && tab) tab.outline = found;
+      const symbol = (s) => {
+        const line = Math.min(s.line, n), end = Math.min(s.end, n), text = model.getLineContent(line);
+        const at = text.search(new RegExp(`\\b(?:def|class)\\s+${s.name}\\b`));
+        const col = at < 0 ? 1 : text.indexOf(s.name, at) + 1;
+        return {name: s.name, detail: '', kind: kind[s.kind], tags: [], range: new monaco.Range(line, 1, end, model.getLineMaxColumn(end)),
+          selectionRange: new monaco.Range(line, col, line, Math.min(col + s.name.length, model.getLineMaxColumn(line))), children: s.children.map(symbol)};  // an outline kept from before an edit may not fit the line
+      };
+      return (found || (tab && tab.outline) || []).map(symbol);
+    },
+  });
   monaco.languages.registerDocumentFormattingEditProvider('py', {
     async provideDocumentFormattingEdits(model) {
       const path = S.pathOf.get(model.uri.toString()) || model.uri.fsPath;
@@ -739,11 +830,10 @@ function registerProviders() {
   monaco.editor.registerEditorOpener({
     openCodeEditor(source, resource, where) {
       const path = S.pathOf.get(resource.toString()) || resource.fsPath;
-      openFile(path).then((tab) => {
-        if (!tab || !where) return;
-        if (where.startLineNumber) revealAt(where.startLineNumber, where.startColumn, where.endLineNumber === where.startLineNumber ? where.endColumn : undefined);
-        else revealAt(where.lineNumber, where.column);
-      });
+      const at = !where ? {} : where.startLineNumber
+        ? {line: where.startLineNumber, col: where.startColumn, endCol: where.endLineNumber === where.startLineNumber ? where.endColumn : undefined}
+        : {line: where.lineNumber, col: where.column};
+      openFile(path, at);  // with the place, so Back sees one jump
       return true;
     },
   });
@@ -1109,6 +1199,8 @@ function fileMenu(entry) {
     ['Open', () => openFile(entry.path)],
     ['Copy path', () => navigator.clipboard.writeText(entry.path)],
     [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(entry.path)],
+    ['Rename…', () => renameEntry(entry)],
+    [S.mac ? 'Move to Trash' : 'Delete', () => trashEntry(entry)],
   ];
 }
 
@@ -1120,7 +1212,60 @@ function dirMenu(entry, isRoot, rootIdx) {
     [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(join(entry.path, '.'))],
   ];
   if (isRoot) items.push(['Remove from slate', () => removeRoot(rootIdx)]);
+  else items.push(['Rename…', () => renameEntry(entry)], [S.mac ? 'Move to Trash' : 'Delete', () => trashEntry(entry)]);
   return items;
+}
+
+// A path at or under base (a renamed or deleted file or folder), by keyOf's identity
+const under = (path, base) => keyOf(path) === keyOf(base) || keyOf(path).startsWith(keyOf(base) + '\\');
+
+async function renameEntry(entry) {
+  const name = prompt(`New name for ${entry.name}`, entry.name);
+  if (!name || name === entry.name) return;
+  const open = S.tabs.filter((t) => under(t.path, entry.path)), unsaved = open.filter(isDirty);
+  if (unsaved.length) { toast(`Save ${unsaved.map((t) => basename(t.path)).join(', ')} first`); return; }
+  let to;
+  try { to = await api.rename(entry.path, name); } catch (e) { toast(errMsg(e)); return; }
+  const moved = (p) => (under(p, entry.path) ? to + p.slice(entry.path.length) : p);
+  for (const p of [...nav.back, ...nav.forward, nav.here].filter(Boolean)) p.path = moved(p.path);  // first: retarget's activate compares with nav.here
+  for (const tab of open) await retarget(tab, moved(tab.path));
+  S.closed = S.closed.map(moved);
+  S.expanded = new Set([...S.expanded].map((k) => (under(k, entry.path) ? keyOf(to) + k.slice(entry.path.length) : k)));
+  finderCache = null;
+  await renderTree();
+  renderTabs();
+  persist();
+}
+
+// A renamed file's tab keeps its place, now with a model at the new path (models are keyed by path). Never an unsaved one.
+async function retarget(tab, path) {
+  let file;
+  try { file = await api.read_file(path); } catch (e) { toast(errMsg(e)); return; }
+  const front = tab === S.active, old = tab.model, oldKey = tab.key;
+  clearTimeout(tab.lintTimer);
+  Object.assign(tab, {path: file.path, key: keyOf(file.path), model: modelFor(file.path, file.text), mtime: file.mtime, encoding: file.encoding,
+    viewState: front ? editor.saveViewState() : tab.viewState, markers: [], linted: false, cellDecos: null, blankDecos: null, glycanFixes: null, outline: null, deleted: false});
+  tab.savedVersion = tab.model.getAlternativeVersionId();
+  tab.model.onDidChangeContent(() => onEdit(tab));
+  S.mru = S.mru.map((k) => (k === oldKey ? tab.key : k));
+  if (front) activate(tab, {mru: false});
+  old.dispose();
+  if (tab.model.getLanguageId() === 'py') { markCells(tab); if (!front) lintLater(tab); }
+}
+
+async function trashEntry(entry) {
+  const unsaved = S.tabs.filter((t) => under(t.path, entry.path) && isDirty(t));
+  const lost = unsaved.length ? `\n\nUnsaved changes in ${unsaved.map((t) => basename(t.path)).join(', ')} will be lost.` : '';
+  if (!confirm(`Move ${entry.name} to ${S.mac ? 'the Trash' : 'the Recycle Bin'}?${lost}`)) return;
+  try { await api.trash(entry.path); } catch (e) { toast(errMsg(e)); return; }
+  nav.back = nav.back.filter((p) => !under(p.path, entry.path));
+  nav.forward = nav.forward.filter((p) => !under(p.path, entry.path));
+  if (nav.here && under(nav.here.path, entry.path)) nav.here = null;  // so closing its tab notes no place in it
+  for (const tab of S.tabs.filter((t) => under(t.path, entry.path))) closeTab(tab, {force: true});
+  S.closed = S.closed.filter((p) => !under(p, entry.path));
+  finderCache = null;
+  await renderTree();
+  persist();
 }
 
 async function createIn(entry, isDir) {
@@ -1967,11 +2112,17 @@ function bindUi() {
     'alt+shift+l': revealActiveInTree,
     'f5': runFile, 'shift+f10': runFile,  // F5 also no longer reloads the page
     'ctrl+alt+s': openSettings,  // PyCharm's
+    'ctrl+alt+arrowleft': () => goPlace(-1), 'ctrl+alt+arrowright': () => goPlace(1),  // PyCharm's back and forward
+    'alt+arrowleft': () => goPlace(-1), 'alt+arrowright': () => goPlace(1),  // VS Code's
+    'ctrl+f12': fileStructure,  // PyCharm's file structure popup
   };
   if (S.mac) {  // Cmd stands in for Ctrl (comboOf), except where a Mac's VS Code and PyCharm keep the Ctrl key itself
     for (const k of ['ctrl+tab', 'ctrl+shift+tab', 'ctrl+`']) { keys['mac' + k] = keys[k]; delete keys[k]; }
     Object.assign(keys, {'ctrl+,': openSettings, 'macctrl+r': runFile, 'ctrl+alt+arrowright': () => cycleTab(1), 'ctrl+alt+arrowleft': () => cycleTab(-1)});
+    Object.assign(keys, {'macctrl+-': () => goPlace(-1), 'macctrl+shift+-': () => goPlace(1), 'macctrl+shift+_': () => goPlace(1)});  // a Mac's VS Code; Option+arrows move by word there
     delete keys['ctrl+f4'];
+    delete keys['alt+arrowleft'];
+    delete keys['alt+arrowright'];
   }
   addEventListener('keydown', (e) => {
     if (!$('finder').classList.contains('hidden')) {
@@ -1987,8 +2138,12 @@ function bindUi() {
     if (e.key === 'Control' && mruCycle !== null) {
       mruCycle = null;
       if (S.active) S.mru = [S.active.key, ...S.mru.filter((k) => k !== S.active.key)];
+      notePlace();  // the tab Ctrl+Tab settled on; the ones passed on the way are no places
     }
   });
+  // the mouse's back and forward buttons; on mouseup, where the browser would otherwise go back in its history
+  addEventListener('mouseup', (e) => { if (e.button === 3 || e.button === 4) { e.preventDefault(); goPlace(e.button === 3 ? -1 : 1); } });
+  editor.onDidChangeCursorPosition(notePlace);
   addEventListener('mousedown', (e) => { if (!$('menu').contains(e.target)) hideMenu(); });
   $('finder-input').addEventListener('input', renderFinder);
   $('finder').addEventListener('focusout', (e) => { if (!$('finder').contains(e.relatedTarget)) setTimeout(() => { if (!$('finder').contains(document.activeElement)) $('finder').classList.add('hidden'); }, 100); });

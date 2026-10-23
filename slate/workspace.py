@@ -77,6 +77,18 @@ def create(path, is_dir = False):
     return str(p)
 
 
+def rename(path, name):
+    """Give a file or folder a new name in the same folder; returns the new path."""
+    p = Path(path)
+    if not name or name in ('.', '..') or any(c in name for c in '\\/'):
+        raise ValueError(f"'{name}' is not a name for a file or folder")
+    target = p.with_name(name)
+    if target.exists() and os.path.normcase(str(target)) != os.path.normcase(str(p)):  # only the case changes: Windows sees one file
+        raise ValueError(f'{name} already exists')
+    p.rename(target)
+    return str(target)
+
+
 def walk_files(roots):
     """(root index, path relative to that root) for every file the finder and search should see."""
     count = 0
