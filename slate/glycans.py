@@ -118,7 +118,8 @@ class Drawer:
 
 def remember(path, text, tree):
     """The tree style's lint just parsed: the glycan check comes right after for the same text, and parsing glycowork's
-    processing.py takes 63 ms."""
+    processing.py takes 63 ms. style.lint calls it only when that check follows, which then drops it: a tree is about 25
+    times its source, and keeping the last one held 4-5 MB for nothing."""
     global _tree
     _tree = (path, text, tree)
 
@@ -170,11 +171,13 @@ def written_as_value(node, parents):
 def literals(path, text):
     """[(line, start, end, glycan)] for each glycan written as a string value in a Python file, with 1-based character
     columns of the string's content, as Monaco counts them; [] for test files."""
+    global _tree
+    kept, _tree = _tree, (None, None, None)
     if is_test(path) or not ANY_GLYCAN.search(text):
         return []
     lines, out = text.split('\n'), []
     hot = [n for n, line in enumerate(lines, 1) if ANY_GLYCAN.search(line)]
-    tree = _tree[2] if _tree[0] == path and _tree[1] == text else None
+    tree = kept[2] if kept[0] == path and kept[1] == text else None
     try:
         tree = tree or ast.parse(text)
     except (SyntaxError, ValueError):

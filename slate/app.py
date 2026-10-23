@@ -170,8 +170,9 @@ class Api:
         system.reveal(path)
 
     # python
-    def lint(self, path, text):
-        return style.lint(path, text, self._state.get('style_script'))
+    def lint(self, path, text, glycan_check = True):
+        """glycan_check: whether the page asks for the glycan check of this text next, which reuses the lint's tree."""
+        return style.lint(path, text, self._state.get('style_script'), glycan_check = glycan_check)
 
     def format(self, path, text):
         return style.format_source(path, text, self._state.get('style_script'))

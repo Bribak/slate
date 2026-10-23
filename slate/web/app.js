@@ -585,7 +585,8 @@ async function lint(tab) {
   const version = tab.model.getVersionId();
   let result;
   try {
-    result = await api.lint(tab.path, tab.model.getValue(monaco.editor.EndOfLinePreference.LF));
+    const glycanCheck = tab === S.active && !glycans.off && !glycans.noProcess;  // as checkGlycans: otherwise Python need not keep the tree for it
+    result = await api.lint(tab.path, tab.model.getValue(monaco.editor.EndOfLinePreference.LF), glycanCheck);
   } catch (e) {
     tab.lintNote = errMsg(e);
     if (tab === S.active) updateStatus();

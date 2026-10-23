@@ -23,6 +23,7 @@ class Console:
         self._proc, self._port = None, None
         self.python = None  # the python.exe running now
         self._pending, self._lock = [], threading.Lock()
+        self._waiting = threading.Event()  # set by _push: the flusher sleeps until there is output, not every FLUSH_EVERY
         self._next_id = 0
         threading.Thread(target = self._flusher, daemon = True).start()
 
@@ -32,11 +33,14 @@ class Console:
                 self._pending[-1][1] += payload
             else:
                 self._pending.append([kind, payload])
+            self._waiting.set()
 
     def _flusher(self):
         while True:
-            time.sleep(FLUSH_EVERY)
+            self._waiting.wait()  # polling every FLUSH_EVERY woke slate 20 times a second for the whole session, console or not
+            time.sleep(FLUSH_EVERY)  # what follows within that time goes in the same batch
             with self._lock:
+                self._waiting.clear()
                 batch, self._pending = self._pending, []
             for item in batch:
                 if item[0] in ('o', 'e') and len(item[1]) > MAX_CHUNK:  # a runaway print loop must not freeze the window

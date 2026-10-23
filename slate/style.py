@@ -4,6 +4,7 @@ A file outside any project with a .github/scripts/check_style.py uses the fallba
 """
 import ast
 import importlib.util
+import inspect
 import io
 import json
 import threading
@@ -106,9 +107,9 @@ def saved(path):
         del _signatures[key]
 
 
-def lint(path, source, fallback = None):
+def lint(path, source, fallback = None, glycan_check = True):
     with _lock:
-        return _lint(path, source, fallback)
+        return _lint(path, source, fallback, glycan_check = glycan_check)
 
 
 def compile_problems(path, source):
@@ -129,12 +130,13 @@ def compile_problems(path, source):
             for w in caught if issubclass(w.category, SyntaxWarning)], tree
 
 
-def _lint(path, source, fallback):
+def _lint(path, source, fallback, glycan_check = True):
     markers, tree = compile_problems(path, source)
     if tree is None:
         return {'markers': markers}
     hints.remember(path, tree, source)  # the tree is at hand, and a call being typed later will not parse
-    glycans.remember(path, source, tree)  # for the glycan check the page asks for right after
+    if glycan_check:
+        glycans.remember(path, source, tree)  # for the glycan check the page asks for right after
     root, script = find_script(path, fallback = fallback)
     if script is None:
         return {'markers': markers, 'note': 'no check_style.py found'}
@@ -146,7 +148,9 @@ def _lint(path, source, fallback):
     module.check_positional_kwargs(tree, signatures(module, script, root), report)
     note = None
     if hasattr(module, 'pycodestyle_findings'):
-        markers += [{'line': ln, 'col': col + 1, 'code': code, 'message': msg, 'severity': 'warning'} for ln, col, code, msg in module.pycodestyle_findings(source)]
+        findings = module.pycodestyle_findings
+        found = findings(source, tokens) if 'tokens' in inspect.signature(findings).parameters else findings(source)  # the tokens above, not made again: 21% of pycodestyle's time
+        markers += [{'line': ln, 'col': col + 1, 'code': code, 'message': msg, 'severity': 'warning'} for ln, col, code, msg in found]
     else:
         note = f'{script} predates --fix: update it for pycodestyle squiggles and reformatting'
     return {'markers': markers, 'note': note, 'script': str(script)}
