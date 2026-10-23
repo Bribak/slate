@@ -89,6 +89,7 @@ def run(window):
     js(window, "closeFinder() || 1")
     check('second launch hands over a file', instance.hand_off([str(OTHER)]))
     check('handed file opened', until(window, f"S.tabs.some((t) => t.path === {json.dumps(str(OTHER))}) && 1"), expect = 1)
+    check('no other tabs', js(window, 'S.tabs.length'), expect = 2)  # on macOS AppKit once also opened smoke.py from the command line
     errors = js(window, "JSON.stringify(usage.events.filter((e) => /error/.test(e.kind)).map((e) => e.call || e.message))")
     check('no page or API errors', json.loads(errors or '["no answer"]'), expect = [])
 

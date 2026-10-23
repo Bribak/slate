@@ -9,7 +9,8 @@ pywebview's Cocoa backend needs three changes, made by `prepare` before the wind
   methods call super(BrowserView.WebKitHost, self), which looks the class up by name, so a subclass put in its place made
   every such call recurse into itself.
 * Its app delegate has no application:openFiles:, which Finder and the Dock use to hand an app files. Its methods use no
-  such super, so a subclass takes its place.
+  such super, so a subclass takes its place. NSTreatUnknownArgumentsAsOpen = NO keeps AppKit from passing it the
+  process's own command line as files too.
 * The menu bar would say "Python", the name of the process's bundle.
 """
 import os
@@ -36,6 +37,10 @@ def prepare(open_paths, quitting):
         if info is not None:
             info['CFBundleName'] = 'slate'  # read when the menu bar is built, so before pywebview's Cocoa module creates the app
     Foundation.NSProcessInfo.processInfo().setProcessName_('slate')
+    # Once the delegate below takes files, AppKit also "opens" the process's own command line: `python tools/smoke.py` opened
+    # smoke.py, and `slate file.py` would open file.py twice. Arguments reach slate through sys.argv. Registered, so not saved
+    # in Python's own defaults
+    Foundation.NSUserDefaults.standardUserDefaults().registerDefaults_({'NSTreatUnknownArgumentsAsOpen': 'NO'})
     import AppKit
     import objc
     from webview.platforms import cocoa
