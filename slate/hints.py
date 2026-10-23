@@ -29,6 +29,12 @@ def cache_file():
 
 def comment(line):
     """The # comment at the end of a source line, ignoring a # inside a string."""
+    i = comment_start(line)
+    return line[i + 1:].strip() if i >= 0 else ''
+
+
+def comment_start(line):
+    """Where the # comment of a source line starts, ignoring a # inside a string; -1 without one."""
     quote, i = None, 0
     while i < len(line):
         c = line[i]
@@ -42,9 +48,9 @@ def comment(line):
             quote = c * 3 if line.startswith(c * 3, i) else c
             i += len(quote) - 1
         elif c == '#':
-            return line[i + 1:].strip()
+            return i
         i += 1
-    return ''
+    return -1
 
 
 def describe(fn, lines, kind, owner = None, cls = None):

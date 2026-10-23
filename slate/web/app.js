@@ -111,27 +111,31 @@ try {
 
 // ---------------------------------------------------------------- boot
 
+// Monaco needs nothing from Python, so it loads while pywebview connects its bridge, and the fonts load alongside it
+window.MonacoEnvironment = {getWorkerUrl() {
+  const base = new URL('vendor/', location.href).href;
+  return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(
+    `self.MonacoEnvironment = {baseUrl: '${base}'}; importScripts('${base}vs/base/worker/workerMain.js');`);
+}};
+require.config({paths: {vs: 'vendor/vs'}});
+const monacoLoaded = new Promise((resolve) => require(['vs/editor/editor.main'], resolve));
+
 function boot() {
   if (boot.done) return;
   boot.done = true;
   api = track(window.pywebview.api);
-  api.get_state().then((info) => {
+  Promise.all([api.get_state(), monacoLoaded, loadFonts()]).then(([info]) => {
     S.python = info.python;
     S.home = info.home;
-    window.MonacoEnvironment = {getWorkerUrl() {
-      const base = new URL('vendor/', location.href).href;
-      return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(
-        `self.MonacoEnvironment = {baseUrl: '${base}'}; importScripts('${base}vs/base/worker/workerMain.js');`);
-    }};
-    require.config({paths: {vs: 'vendor/vs'}});
-    require(['vs/editor/editor.main'], () => { monaco = window.monaco; init(info.state || {}); });
+    monaco = window.monaco;
+    init(info.state || {});
   });
 }
 
 if (window.pywebview && window.pywebview.api && window.pywebview.api.get_state) boot();
 else window.addEventListener('pywebviewready', boot);
 
-// Load the JetBrains Mono that PyCharm ships (Python finds it) under the name 'slate mono', before Monaco measures the font.
+// Load the JetBrains Mono that PyCharm ships (Python finds it) under the name 'slate mono', before the editor measures the font.
 async function loadFonts() {
   let files = [];
   try { files = await api.editor_fonts(); } catch (e) { return; }
@@ -145,7 +149,6 @@ async function loadFonts() {
 
 async function init(saved) {
   registerSlatePython(monaco);
-  await loadFonts();
   editor = monaco.editor.create($('editor'), {
     model: null, theme: 'darcula', fontFamily: FONT, fontSize: 13, lineHeight: 20,  // PyCharm's defaults: size 13, line spacing 1.2
     automaticLayout: true, minimap: {enabled: false}, scrollBeyondLastLine: false, bracketPairColorization: {enabled: false},
@@ -154,6 +157,7 @@ async function init(saved) {
     wordBasedSuggestions: 'allDocuments', definitionLinkOpensInPeek: false, 'semanticHighlighting.enabled': false,
   });
   registerProviders();
+  setupGlycans(saved);
   editor.onDidChangeCursorSelection(updateStatusPos);
   editor.onDidChangeModelContent(() => persist());
   S.roots = saved.roots || [];
@@ -174,22 +178,38 @@ async function init(saved) {
   bindUi();
   setupConsole();
   layout();
+  // files double-clicked in Explorer come first, so the one asked for shows before the rest of the session is back
+  const savedTabs = saved.tabs || [];
+  const launched = await api.page_ready();
+  if (launched.length) {
+    await openPaths(launched, new Map(savedTabs.map((t) => [keyOf(t.path), t.viewState])));
+    S.launchedMs = Math.round(performance.now());
+  }
   await loadExtensions();  // before showView, which may restore a view an extension adds
   showView(S.view);
   renderTree();
-  for (const t of saved.tabs || []) await openFile(t.path, {background: true, viewState: t.viewState, quiet: true});
-  S.mru = (saved.mru || []).filter((k) => S.tabs.some((t) => t.key === k));
+  const reads = savedTabs.map((t) => {  // all at once, since each is a round trip over the bridge; openFile reports failures
+    const read = api.read_file(t.path);
+    read.catch(() => {});
+    return read;
+  });
+  for (const [i, t] of savedTabs.entries()) await openFile(t.path, {background: true, viewState: t.viewState, quiet: true, file: reads[i]});
+  const rank = new Map(savedTabs.map((t, i) => [keyOf(t.path), i]));
+  const rankOf = (tab) => (rank.has(tab.key) ? rank.get(tab.key) : rank.size);
+  S.tabs.sort((a, b) => rankOf(a) - rankOf(b));  // the saved order, then the launched files, as before
+  S.mru = [...S.mru, ...(saved.mru || []).filter((k) => !S.mru.includes(k) && S.tabs.some((t) => t.key === k))];
   const active = saved.active && S.tabs.find((t) => t.key === keyOf(saved.active));
-  if (active || S.tabs.length) activate(active || S.tabs[0]);
+  if (!S.active && (active || S.tabs.length)) activate(active || S.tabs[0]);
   else renderTabs();
   if (saved.consoleOpen) toggleConsole(true);
   updateStatus();
   S.ready = true;
+  persist();
   drainLints();  // the front tab's check, started by activate, goes first
-  await openPaths(await api.page_ready());  // files double-clicked in Explorer, before or while slate was starting
   setInterval(checkDisk, 2000);
   setInterval(flushUsage, 60000);
-  usage.events.push({kind: 'ready', ms: Math.round(performance.now()), tabs: S.tabs.length, roots: S.roots.length, dpr: devicePixelRatio});
+  usage.events.push({kind: 'ready', ms: Math.round(performance.now()), tabs: S.tabs.length, roots: S.roots.length, dpr: devicePixelRatio,
+    launched: launched.length, file_ms: S.launchedMs});
   addEventListener('resize', debounce(() => {
     const box = $('editor'), info = editor.getLayoutInfo();
     usage.events.push({kind: 'resize', size: [innerWidth, innerHeight], dpr: devicePixelRatio, editor: [info.width, info.height], box: [box.clientWidth, box.clientHeight]});
@@ -227,7 +247,7 @@ async function openFile(path, opts = {}) {
   if (!tab) {
     let file;
     try {
-      file = await api.read_file(path);
+      file = await (opts.file || api.read_file(path));
     } catch (e) {
       if (!opts.quiet) toast(errMsg(e));
       return null;
@@ -250,10 +270,10 @@ async function openFile(path, opts = {}) {
 }
 
 // Files from Explorer open as tabs (the last one in front); folders become roots in the tree.
-async function openPaths(items) {
+async function openPaths(items, viewStates = new Map()) {
   let last = null;
   for (const it of items) {
-    if (!it.dir) { last = (await openFile(it.path, {background: true})) || last; continue; }
+    if (!it.dir) { last = (await openFile(it.path, {background: true, viewState: viewStates.get(keyOf(it.path))})) || last; continue; }
     if (S.roots.some((r) => keyOf(r) === keyOf(it.path))) continue;
     S.roots.push(it.path);
     S.expanded.add(keyOf(it.path));
@@ -711,6 +731,103 @@ function registerProviders() {
         else revealAt(where.lineNumber, where.column);
       });
       return true;
+    },
+  });
+}
+
+// ---------------------------------------------------------------- glycan drawings (slate/glycans.py)
+
+// A string on one line that reads as an IUPAC-condensed glycan: only glycan characters, and at least one linkage.
+// Of 1,099 such strings in glycowork and CandyCrunch, GlycoDraw drew all but 4 deliberately broken test inputs.
+const GLYCAN_STRING = /(['"])([A-Za-z[{][A-Za-z0-9?\-()[\]{},.|/ ]*?)\1/g;
+const LINKAGE = /\([abo?][\d?]?-[\d?][\d?|/,]*\)/;
+const GLYCANS_KEPT = 300;  // drawings, most recently shown first; each is about 11 KB of data URLs
+const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, off: false, count: 0};
+
+function glycansIn(model, from, to) {
+  const out = [];
+  for (let n = from; n <= to; n++) {
+    const line = model.getLineContent(n);
+    if (line.length > 3000 || !line.includes('-')) continue;
+    for (const m of line.matchAll(GLYCAN_STRING)) {
+      if (LINKAGE.test(m[2])) out.push({glycan: m[2], line: n, start: m.index + 1, end: m.index + m[0].length + 1});
+    }
+  }
+  return out;
+}
+
+const svgUrl = (svg) => 'data:image/svg+xml;base64,' + btoa(Array.from(new TextEncoder().encode(svg), (b) => String.fromCharCode(b)).join(''));
+const viewBox = (svg) => ((svg.match(/viewBox="([^"]+)"/) || [])[1] || '0 0 100 100').split(/[\s,]+/).map(Number);
+
+// The small drawing goes into a style rule of its own, since injected text can only carry a class; the full one is for the hover,
+// on white, because GlycoDraw draws its lines in charcoal on nothing
+function glycanDrawing([small, full]) {
+  const [, , w, h] = viewBox(small), [x, y, fw, fh] = viewBox(full);
+  const cls = 'glycan-' + (++glycans.count);
+  const style = el('style', null, `.${cls} { width: ${Math.max(4, Math.round(16 * w / h))}px; background-image: url("${svgUrl(small)}"); }`);
+  document.head.append(style);
+  const onWhite = full.replace(/<svg[^>]*>/, (open) => `${open}<rect x="${x}" y="${y}" width="${fw}" height="${fh}" fill="#FFFFFF"/>`);
+  return {cls, style, full: svgUrl(onWhite), size: [fw, fh]};
+}
+
+function drawnGlycan(glycan) {
+  const d = glycans.drawn.get(glycan);
+  if (d) { glycans.drawn.delete(glycan); glycans.drawn.set(glycan, d); }  // most recently shown last, so the oldest go first
+  return d;
+}
+
+function showGlycans(found) {
+  glycans.decorations.set(found.filter((f) => glycans.drawn.get(f.glycan)).map((f) => ({
+    range: new monaco.Range(f.line, f.end, f.line, f.end),
+    options: {description: 'glycan', showIfCollapsed: true,  // without showIfCollapsed, Monaco drops injected text at an empty range
+      after: {content: '​', inlineClassName: 'glycan ' + drawnGlycan(f.glycan).cls, inlineClassNameAffectsLetterSpacing: true,
+        cursorStops: monaco.editor.InjectedTextCursorStops.None}},
+  })));
+}
+
+// Glycans on the visible lines and 30 either side: the 2,167 in glycowork's test_core_functions.py would take 4 s to draw at once
+const refreshGlycans = debounce(async () => {
+  const model = editor.getModel(), ranges = editor.getVisibleRanges();
+  if (glycans.off || !model || model.getLanguageId() !== 'py' || !ranges.length) { glycans.decorations.clear(); return; }
+  const from = Math.max(1, ranges[0].startLineNumber - 30), to = Math.min(model.getLineCount(), ranges[ranges.length - 1].endLineNumber + 30);
+  const found = glycansIn(model, from, to);
+  showGlycans(found);
+  const missing = [...new Set(found.map((f) => f.glycan))].filter((g) => !glycans.drawn.has(g) && !glycans.waiting.has(g));
+  if (!missing.length) return;
+  missing.forEach((g) => glycans.waiting.add(g));
+  let drawn;
+  try { drawn = await api.glycans(missing, S.roots); } catch (e) { drawn = {error: errMsg(e)}; }
+  missing.forEach((g) => glycans.waiting.delete(g));
+  if (drawn.error) {
+    glycans.off = true;
+    glycans.decorations.clear();
+    toast(`No glycan drawings this session: ${drawn.error}`);
+    return;
+  }
+  for (const [g, svgs] of Object.entries(drawn)) glycans.drawn.set(g, svgs && glycanDrawing(svgs));
+  for (const [g, d] of glycans.drawn) {
+    if (glycans.drawn.size <= GLYCANS_KEPT) break;
+    glycans.drawn.delete(g);
+    if (d) d.style.remove();
+  }
+  if (editor.getModel() === model) refreshGlycans();
+}, 150);
+
+function setupGlycans(saved) {
+  glycans.off = saved.glycan_drawings === false;
+  glycans.decorations = editor.createDecorationsCollection();
+  editor.onDidChangeModel(refreshGlycans);
+  editor.onDidChangeModelContent(refreshGlycans);
+  editor.onDidScrollChange((e) => e.scrollTopChanged && refreshGlycans());
+  editor.onDidLayoutChange(refreshGlycans);
+  monaco.languages.registerHoverProvider('py', {
+    provideHover(model, position) {
+      const f = glycans.off ? null : glycansIn(model, position.lineNumber, position.lineNumber).find((g) => position.column >= g.start && position.column <= g.end);
+      const d = f && glycans.drawn.get(f.glycan);
+      if (!d) return null;
+      const scale = Math.min(1, 480 / d.size[0], 360 / d.size[1]);
+      return {range: new monaco.Range(f.line, f.start, f.line, f.end),
+        contents: [{value: `![SNFG drawing](${d.full}|width=${Math.round(d.size[0] * scale)},height=${Math.round(d.size[1] * scale)})`}]};
     },
   });
 }
@@ -1319,6 +1436,11 @@ function showDiff(original, modified, {title = '', language = 'plaintext', actio
   const view = monaco.editor.createDiffEditor(body, {theme: 'darcula', fontFamily: FONT, fontSize: 13, lineHeight: 20, readOnly: true,
     automaticLayout: true, minimap: {enabled: false}, scrollBeyondLastLine: false, renderSideBySide: true});
   view.setModel({original: left, modified: right});
+  const first = view.onDidUpdateDiff(() => {  // open at the first change, not at the top of the file; once, so scrolling stays yours
+    first.dispose();
+    const change = (view.getLineChanges() || [])[0];
+    if (change) view.getModifiedEditor().revealLineInCenter(Math.max(change.modifiedStartLineNumber, 1));
+  });
   const close = () => { view.dispose(); left.dispose(); right.dispose(); box.remove(); removeEventListener('keydown', esc, true); if (S.active) editor.focus(); };
   const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
   addEventListener('keydown', esc, true);
@@ -1401,7 +1523,7 @@ function updateStatusPos() {
 }
 
 const persist = debounce(() => {
-  if (!api) return;
+  if (!S.ready) return;  // a save halfway through restoring would drop the tabs not yet back
   api.save_state({
     roots: S.roots,
     tabs: S.tabs.map((t) => ({path: t.path, viewState: t === S.active ? editor.saveViewState() : t.viewState})),

@@ -1,6 +1,6 @@
 """Measure slate in a real window: startup, scroll and typing frame times, RAM per process, and RAM while inactive.
 
-python tools/bench.py LABEL [--flags "<chromium flags>"] [--options '<Monaco options as JSON>'] [--x 4300]
+python tools/bench.py LABEL [--flags "<chromium flags>"] [--options '<Monaco options as JSON>'] [--state '<state keys as JSON>'] [--line N] [--x 4300]
 
 Runs an isolated session (%TEMP%\\slate-bench\\LABEL) with 8 tabs from glycowork, scrolls a 2,350-line file, types into a
 scratch copy (nothing is saved), then fires the window's blur event and measures again after 15 s, as when you switch to
@@ -23,6 +23,8 @@ ap.add_argument('label')
 ap.add_argument('--flags', default = '')
 ap.add_argument('--options', default = '{}')
 ap.add_argument('--x', type = int, default = None)
+ap.add_argument('--state', default = '{}', help = 'state keys as JSON, e.g. \'{"glycan_drawings": false}\'')
+ap.add_argument('--line', type = int, default = None, help = 'show this line of the front tab before measuring memory')
 args = ap.parse_args()
 if args.flags:
     os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = args.flags
@@ -38,7 +40,7 @@ tabs = [G / 'motif' / f for f in ('processing.py', 'analysis.py', 'draw.py', 'gr
 tabs = [str(t) for t in tabs if t.is_file()]
 placement = {'rect': [args.x, 120, args.x + 1400, 120 + 900], 'maximized': False} if args.x is not None else None
 state.save({'roots': [str(G.parent)], 'tabs': [{'path': t} for t in tabs], 'active': tabs[0], 'autosave': False, 'consoleOpen': True,
-            **({'placement': placement} if placement else {})})
+            **({'placement': placement} if placement else {}), **json.loads(args.state)})
 import webview
 
 MEMORY = r"""
@@ -177,6 +179,9 @@ def measure(window):
     log('probe start')
     result.update(json.loads(need(js(window, PROBE.replace('OPTIONS', args.options)), 'scroll and typing probe')))
     log('probe done')
+    if args.line:
+        js(window, f'editor.revealLineNearTop({args.line}) || 1')
+        time.sleep(3)  # for what that line shows, such as glycan drawings, whose process takes 2 s to start
     time.sleep(3)
     result['ram_active'] = memory()
     subprocess.run(['powershell', '-NoProfile', '-Command', f'& {{ {CAPTURE} }} {os.getpid()} "{OUT / (args.label + ".png")}"'], capture_output = True, creationflags = subprocess.CREATE_NO_WINDOW)

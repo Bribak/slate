@@ -87,6 +87,9 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #editor-wrap { flex: 1; position: relative; min-height: 0; }
 #editor { position: absolute; inset: 0; }
 .gw1-gutter { background: var(--warn); width: 3px !important; margin-left: 4px; }
+/* a glycan's SNFG drawing after its string (app.js, glycan drawings); the width comes from the drawing's own rule */
+.glycan { display: inline-block; height: 16px; padding: 1px 3px; margin-left: 4px; vertical-align: -4px; border-radius: 3px;
+  background: #E4E4E4 center / contain no-repeat content-box padding-box; }
 #empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--fg-dim); background: var(--bg); }
 
 /* console */

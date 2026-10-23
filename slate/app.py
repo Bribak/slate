@@ -8,9 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-import webview
-
-from slate import __version__, fonts, hints, install, instance, navigate, repl, state, style, usage, workspace
+from slate import __version__, fonts, glycans, hints, install, instance, navigate, repl, state, style, usage, workspace
 
 WEB = Path(__file__).with_name('web')
 # WebView2 flags, measured with tools/bench.py on a 250% screen (8 tabs, console open): together about 220 MB less than plain GPU
@@ -18,6 +16,7 @@ WEB = Path(__file__).with_name('web')
 # 4 bits per channel (#2B2B2B drawn as #333333), which --disable-rgba-4444-textures undoes; the GPU memory cap saves ~40 MB more.
 LEAN = '--enable-low-end-device-mode --disable-rgba-4444-textures --force-gpu-mem-available-mb=64'
 SOFTWARE = '--disable-gpu --disable-gpu-compositing'
+MIME_TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.ico': 'image/x-icon', '.png': 'image/png'}
 
 
 class Api:
@@ -26,6 +25,7 @@ class Api:
         self._state = state.load()
         usage.enabled = self._state.get('usage_log', True)
         self._console = repl.Console(self._console_emit)
+        self._drawer = glycans.Drawer()
         self._opens, self._ready, self._lock = [], False, threading.Lock()
         self._hwnd, self._dpi = None, None
         self._started = time.time()
@@ -36,7 +36,7 @@ class Api:
 
     def save_state(self, new_state):
         new_state = dict(new_state)
-        for key in ('placement', 'style_script', 'gpu', 'console_python', 'usage_log'):  # set by hand or by Python, never by the page, so a page save must not drop them
+        for key in ('placement', 'style_script', 'gpu', 'console_python', 'usage_log', 'glycan_drawings'):  # set by hand or by Python, never by the page, so a page save must not drop them
             if key in self._state:
                 new_state[key] = self._state[key]
         self._state = new_state
@@ -52,7 +52,7 @@ class Api:
         return [{'name': f.name, 'code': f.read_text(encoding = 'utf-8')} for f in sorted(folder.glob('*.js'))] if folder.is_dir() else []
 
     def page_ready(self):
-        """Called once the page has restored its session; returns the files and folders it was asked to open meanwhile."""
+        """Called once the page can open files, before it restores the session; returns the files and folders it was asked to open meanwhile."""
         with self._lock:
             self._ready = True
             opens, self._opens = self._opens, []
@@ -89,6 +89,7 @@ class Api:
         self._window.confirm_close = bool(dirty)  # read by pywebview when the window is about to close
 
     def pick_folder(self):
+        import webview
         result = self._window.create_file_dialog(webview.FileDialog.FOLDER)
         return result[0] if result else None
 
@@ -134,6 +135,10 @@ class Api:
     def goto(self, path, text, line, col, roots):
         return navigate.goto(path, text, line, col, roots)
 
+    def glycans(self, names, roots = ()):
+        """GlycoDraw's drawings of glycans written in the code, from the console's Python (slate/glycans.py)."""
+        return self._drawer.draw(list(names), self._state.get('console_python'), list(roots))
+
     # console
     def console_run(self, code, cwd = None, paths = ()):
         return self._console.run(code, cwd, list(paths), self._state.get('console_python'))
@@ -178,7 +183,24 @@ class Api:
     def _shutdown(self):
         usage.record('end', seconds = round(time.time() - self._started))
         self._console.stop()
+        self._drawer.stop()
         instance.release()
+
+
+def serve_pages():
+    """Adjust how pywebview's server (bottle) sends slate's page files.
+    * It asks for no caching, but bottle.static_file replaces the response and drops those headers, so WebView2 kept app.js by
+      heuristic (a tenth of the file's age at download) and could run the old page after an update. 'no-cache' makes it ask
+      each time; unchanged files come back as 304, so its compiled-code cache still applies.
+    * The content type comes from MIME_TYPES: mimetypes would read the Windows registry on the first request, which held up
+      index.html by 105 ms."""
+    import bottle
+    static_file = bottle.static_file
+
+    def serve(filename, *a, **kw):
+        kw.setdefault('mimetype', MIME_TYPES.get(os.path.splitext(filename)[1].lower(), True))
+        return static_file(filename, *a, headers = {'Cache-Control': 'no-cache'}, **kw)
+    bottle.static_file = serve
 
 
 def main():
@@ -187,6 +209,8 @@ def main():
     paths = [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith('--')]
     if instance.hand_off(paths):
         return  # a slate window is already open and took the files
+    import webview  # only now, so a launch that hands its files to the running slate is done in 255 ms instead of 790
+    serve_pages()
     # Per-monitor DPI awareness (v2): WebView2 then renders at each monitor's own resolution. pywebview declares the process only
     # system-aware, which makes Windows bitmap-stretch the window on a monitor whose scaling differs from the main one (blurry text);
     # set first, pywebview's later SetProcessDPIAware has no effect.

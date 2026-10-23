@@ -67,6 +67,9 @@ def summary(events):
     out = [f"{len(by_kind['start'])} sessions, {hours:.1f} h ({events[0]['t'][:10]} to {events[-1]['t'][:10]})" if events else 'no usage logged yet']
     if by_kind['ready']:
         out.append(f"startup to restored session: median {median(e['ms'] for e in by_kind['ready']):.0f} ms, max {max(e['ms'] for e in by_kind['ready']):.0f} ms")
+        opened = [e['file_ms'] for e in by_kind['ready'] if e.get('file_ms')]
+        if opened:
+            out.append(f"startup to double-clicked file: median {median(opened):.0f} ms, max {max(opened):.0f} ms ({len(opened)} starts)")
     calls, keys, long_tasks = defaultdict(lambda: [0, 0.0, 0.0, 0]), Counter(), [0, 0, 0.0]
     for e in by_kind['activity']:
         for name, (n, total, worst, errors) in e.get('calls', {}).items():
