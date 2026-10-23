@@ -119,6 +119,14 @@ RESUME = r"""
 """
 
 
+def on_top(window, value):
+    """pywebview's window.on_top sets TopMost from the calling thread, which keeps the GIL while it waits for the GUI thread:
+    a deadlock whenever the GUI thread is waiting for the GIL to handle a message from the page. Invoke releases it."""
+    from System import Func, Type  # pythonnet, loaded by pywebview by now
+    form = window.native
+    form.Invoke(Func[Type](lambda: setattr(form, 'TopMost', value)))
+
+
 def js(window, code, wait = 120):
     done, box = threading.Event(), {}
     code = f'(async () => ({code.strip()}))()'  # pywebview calls back only for promises; a plain value never arrives
@@ -138,7 +146,23 @@ def log(msg):
         f.write(f'{time.time() - T0:7.1f}s {msg}\n')
 
 
+def need(value, step):
+    if value is None:  # Chromium draws no frames for a window that is covered, minimised or on a sleeping screen, so a probe waiting on requestAnimationFrame never answers
+        raise RuntimeError(f'{step}: no answer from the page in 120 s; keep the bench window visible and the screen on')
+    return value
+
+
 def probe(window):
+    try:
+        measure(window)
+    except Exception as e:
+        log(f'failed: {e}')
+        print(f'bench failed: {e}', file = sys.stderr, flush = True)
+    finally:
+        window.destroy()  # also on failure: a window left open keeps WebView2 running, and its locked profile stops the next run with this label
+
+
+def measure(window):
     window.events.loaded.wait(60)
     log('page loaded')
     while True:
@@ -149,24 +173,27 @@ def probe(window):
             break
     result = {'label': args.label, 'flags': args.flags, 'options': json.loads(args.options), 'ready_s': round(time.time() - T0, 2)}
     time.sleep(3)
-    window.on_top = True
+    on_top(window, True)
     log('probe start')
-    result.update(json.loads(js(window, PROBE.replace('OPTIONS', args.options))))
+    result.update(json.loads(need(js(window, PROBE.replace('OPTIONS', args.options)), 'scroll and typing probe')))
     log('probe done')
     time.sleep(3)
     result['ram_active'] = memory()
     subprocess.run(['powershell', '-NoProfile', '-Command', f'& {{ {CAPTURE} }} {os.getpid()} "{OUT / (args.label + ".png")}"'], capture_output = True, creationflags = subprocess.CREATE_NO_WINDOW)
-    window.on_top = False
+    on_top(window, False)
     BACKGROUND.set()
     js(window, "window.dispatchEvent(new Event('blur')) && 1")
     time.sleep(15)
     result['ram_inactive'] = memory()
     log('memory done')
-    result['resume_ms'] = round(js(window, RESUME), 1)
+    on_top(window, True)  # coming back to slate brings it forward, and a covered window would draw no frame to time
+    resume = js(window, RESUME)  # a synthetic focus event does not always get a frame (see need), and the rest is measured by now
+    result['resume_ms'] = round(resume, 1) if resume is not None else None
+    if resume is None:
+        log('resume probe: no frame in 120 s')
     line = json.dumps(result)
     print(line, flush = True)
     (OUT / f'{args.label}.json').write_text(line)
-    window.destroy()
 
 
 orig_start = webview.start

@@ -174,6 +174,7 @@ async function init(saved) {
   bindUi();
   setupConsole();
   layout();
+  await loadExtensions();  // before showView, which may restore a view an extension adds
   showView(S.view);
   renderTree();
   for (const t of saved.tabs || []) await openFile(t.path, {background: true, viewState: t.viewState, quiet: true});
@@ -193,7 +194,7 @@ async function init(saved) {
     const box = $('editor'), info = editor.getLayoutInfo();
     usage.events.push({kind: 'resize', size: [innerWidth, innerHeight], dpr: devicePixelRatio, editor: [info.width, info.height], box: [box.clientWidth, box.clientHeight]});
   }, 1000));
-  window.addEventListener('focus', () => { api.set_background(false); checkDisk(); renderTree(); });
+  window.addEventListener('focus', () => { api.set_background(false); checkDisk(); renderTree(); emit('focus'); });
   window.addEventListener('blur', () => { api.set_background(true); flushUsage(); if (S.autosave) S.tabs.filter((t) => isDirty(t) && !t.deleted && !t.conflict).forEach((t) => save(t, true)); });
 }
 
@@ -315,6 +316,7 @@ async function save(tab = S.active, quiet = false) {
   updateTabEl(tab);
   renderBanner();
   syncDirty();
+  emit('saved', tab.path);
 }
 
 function closeTab(tab) {
@@ -576,6 +578,63 @@ async function lint(tab) {
   if (tab === S.active) updateStatus();
 }
 
+// ---------------------------------------------------------------- hints: signatures and docstrings of the projects' own code (slate/hints.py)
+
+// The call the text ends inside: {name, qualifier, index of the argument being typed, its keyword}, or null.
+// Strings and comments are skipped, so a '(' in 'Gal(b1-4)' is no call; inner brackets keep their own commas.
+function callAt(text) {
+  const open = [];
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\') i++;
+      else if (text.startsWith(quote, i)) { i += quote.length - 1; quote = null; }
+      else if (c === '\n' && quote.length === 1) quote = null;
+      continue;
+    }
+    if (c === '#') {
+      const nl = text.indexOf('\n', i);
+      if (nl < 0) return null;  // typing a comment
+      i = nl;
+    } else if (c === '"' || c === "'") {
+      quote = text.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+      i += quote.length - 1;
+    } else if ('([{'.includes(c)) {
+      open.push({c, at: i, commas: 0, arg: i + 1});
+    } else if (')]}'.includes(c)) {
+      open.pop();
+    } else if (c === ',' && open.length) {
+      Object.assign(open[open.length - 1], {commas: open[open.length - 1].commas + 1, arg: i + 1});
+    }
+  }
+  const call = [...open].reverse().find((o) => o.c === '(');
+  if (!call) return null;
+  const before = text.slice(0, call.at);
+  const m = before.match(/((?:[A-Za-z_]\w*\s*\.\s*)*[A-Za-z_]\w*)\s*$/);
+  if (!m || /\b(def|class)\s+$/.test(before.slice(0, before.length - m[0].length))) return null;  // a definition, not a call
+  const parts = m[1].replace(/\s+/g, '').split('.');
+  const kw = text.slice(call.arg).match(/^\s*([A-Za-z_]\w*)\s*=(?!=)/);
+  return {name: parts.pop(), qualifier: parts.join('.') || null, index: call.commas, keyword: kw ? kw[1] : null};
+}
+
+async function hintsFor(model, name, qualifier) {
+  const inConsole = consoleInput && model === consoleInput.getModel();
+  const path = inConsole ? null : S.pathOf.get(model.uri.toString()) || model.uri.fsPath;
+  try {
+    return await api.hints(path, name, qualifier, S.roots, inConsole ? S.history.slice(-100) : null);  // the console resolves names through its history's imports
+  } catch (e) {
+    return [];
+  }
+}
+
+function hintDoc(d, withParams) {
+  const parts = [d.doc];
+  if (withParams) parts.push(d.params.filter((p) => p[2]).map((p) => `\`${p[3]}\`: ${p[2]}`).join('  \n'));
+  if (d.returns) parts.push(`Returns: ${d.returns}`);
+  return parts.filter(Boolean).join('\n\n');
+}
+
 function registerProviders() {
   monaco.languages.registerDocumentFormattingEditProvider('py', {
     async provideDocumentFormattingEdits(model) {
@@ -609,6 +668,38 @@ function registerProviders() {
         out.push({uri: target.uri, range: new monaco.Range(d.line, d.col, d.line, d.col + (d.name || '').length)});
       }
       return out;
+    },
+  });
+  monaco.languages.registerSignatureHelpProvider('py', {
+    signatureHelpTriggerCharacters: ['(', ','],
+    signatureHelpRetriggerCharacters: [')'],
+    async provideSignatureHelp(model, position) {
+      const start = Math.max(1, position.lineNumber - 80);  // calls longer than this are rare, and reading the whole model per keystroke is not
+      const call = callAt(model.getValueInRange(new monaco.Range(start, 1, position.lineNumber, position.column)));
+      if (!call) return null;
+      const found = await hintsFor(model, call.name, call.qualifier);
+      if (!found.length) return null;
+      const signatures = found.map((d) => {
+        const named = d.params.findIndex((p) => p[3] === call.keyword);
+        const varargs = d.params.findIndex(([s]) => d.label[s] === '*' && d.label[s + 1] !== '*');  // *args takes every positional argument from there on
+        const active = call.keyword ? named : varargs >= 0 && call.index >= varargs ? varargs : call.index;
+        return {label: d.label, documentation: {value: hintDoc(d, false)}, activeParameter: active,
+          parameters: d.params.map(([s, e, doc]) => ({label: [s, e], documentation: doc ? {value: doc} : undefined}))};
+      });
+      return {value: {signatures, activeSignature: 0, activeParameter: signatures[0].activeParameter}, dispose() {}};
+    },
+  });
+  monaco.languages.registerHoverProvider('py', {
+    async provideHover(model, position) {
+      const word = model.getWordAtPosition(position);
+      if (!word || !/^[A-Za-z_]/.test(word.word)) return null;
+      const before = model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1);
+      if (/#/.test(before.replace(/(['"]).*?\1/g, ''))) return null;  // in a comment
+      const q = before.match(/((?:[A-Za-z_]\w*\s*\.\s*)*[A-Za-z_]\w*)\s*\.\s*$/);
+      const found = await hintsFor(model, word.word, q ? q[1].replace(/\s+/g, '') : null);
+      if (!found.length) return null;
+      return {range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+        contents: found.slice(0, 2).flatMap((d) => [{value: '```python\n' + d.label + '\n```'}, {value: hintDoc(d, true)}])};
     },
   });
   monaco.editor.registerEditorOpener({
@@ -959,10 +1050,10 @@ async function runSearch() {
 }
 
 function showView(view) {
+  if (!$(view + '-view')) view = 'files';  // a view from an extension that is gone
   S.view = view;
   for (const b of document.querySelectorAll('#side-tabs button')) b.classList.toggle('active', b.dataset.view === view);
-  $('files-view').classList.toggle('hidden', view !== 'files');
-  $('search-view').classList.toggle('hidden', view !== 'search');
+  for (const v of document.querySelectorAll('#sidebar > .view')) v.classList.toggle('hidden', v.id !== view + '-view');
   if (!S.sidebarOpen) { S.sidebarOpen = true; layout(); }
   if (view === 'search') {
     const sel = editor && editor.getModel() ? editor.getModel().getValueInRange(editor.getSelection()) : '';
@@ -971,6 +1062,7 @@ function showView(view) {
     $('search-input').select();
   }
   persist();
+  emit('view', view);
 }
 
 // ---------------------------------------------------------------- console
@@ -1115,11 +1207,44 @@ function appendOut(text, cls) {
   if (atBottom) out.scrollTop = out.scrollHeight;
 }
 
+// Figures and drawings from the console (repl_child.py). An <img> never runs an SVG's scripts. Only the newest
+// MAX_IMAGES stay, so a plotting loop cannot fill the page's memory.
+const MAX_IMAGES = 40;
+function appendImage({mime, data, width, height}) {
+  const out = $('console-out');
+  const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 30;
+  const img = el('img', 'plot');
+  img.src = `data:${mime};base64,${data}`;
+  if (width) img.style.width = width + 'px';
+  if (width && height) img.style.aspectRatio = `${width} / ${height}`;  // keeps its place while it decodes, so scrolling does not jump
+  img.addEventListener('contextmenu', (ev) => showMenu(ev, [['Copy image', () => copyImage(img)]]));
+  out.append(img);
+  outLine = null;
+  const images = out.querySelectorAll('img.plot');
+  for (let i = 0; i < images.length - MAX_IMAGES; i++) images[i].replaceWith(el('span', 'sys', '(older figure removed)\n'));
+  if (atBottom) { out.scrollTop = out.scrollHeight; img.addEventListener('load', () => { out.scrollTop = out.scrollHeight; }, {once: true}); }
+}
+
+async function copyImage(img) {
+  const canvas = document.createElement('canvas');  // the clipboard takes PNG only, so an SVG is drawn first
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  canvas.getContext('2d').drawImage(img, 0, 0);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  try {
+    await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
+    toast('Image copied', 'info');
+  } catch (e) {
+    toast(`Could not copy the image: ${errMsg(e)}`);
+  }
+}
+
 window.slate = {
   openPaths: (items) => openPaths(items),
   consoleEvents(batch) {
     for (const [kind, payload] of batch) {
       if (kind === 'o' || kind === 'e') appendOut(payload, kind);
+      else if (kind === 'img') appendImage(payload);
       else if (kind === 'ready') appendOut(`Python ${payload} · variables persist until Restart · Enter runs, Shift+Enter adds a line\n`, 'sys');
       else if (kind === 'done') consoleBusy = Math.max(0, consoleBusy - 1);
       // exit() sends 'exit' and then 'stopped' with code 0, which needs no second line
@@ -1153,6 +1278,76 @@ function toggleConsole(show = !S.consoleOpen) {
     editor.focus();
   }
   persist();
+}
+
+// ---------------------------------------------------------------- personal extensions
+
+// Every .js file in %APPDATA%\slate\extensions (Api.extensions) runs once at startup with `host` below. That folder is
+// outside slate's repo, so an extension reaches no one else, and without it nothing is loaded. An extension runs with the
+// page's full rights: only ever put your own files there.
+const handlers = {};
+const on = (name, fn) => { (handlers[name] = handlers[name] || []).push(fn); };
+
+function emit(name, ...args) {
+  for (const fn of handlers[name] || []) {
+    try { fn(...args); } catch (e) { note('js_error', {message: `extension ${name} handler: ${errMsg(e)}`.slice(0, 300), stack: e.stack}); }
+  }
+}
+
+// A sidebar view next to Folders and Search; returns its element for the extension to fill.
+function addView(id, title) {
+  const button = el('button', null, title);
+  button.dataset.view = id;
+  button.onclick = () => showView(id);
+  $('side-tabs').append(button);
+  const view = el('section', 'view hidden');
+  view.id = id + '-view';
+  $('sidebar').append(view);
+  return {element: view, button, visible: () => S.view === id && S.sidebarOpen};
+}
+
+// Two texts side by side in Monaco's diff editor, made on demand and disposed on close. actions: [[label, fn], ...].
+function showDiff(original, modified, {title = '', language = 'plaintext', actions = []} = {}) {
+  const box = el('div');
+  box.id = 'diff';
+  const head = el('div', 'diff-head');
+  head.append(el('span', 'diff-title', title), el('span', 'spacer'));
+  const body = el('div', 'diff-body');
+  box.append(head, body);
+  document.body.append(box);
+  const left = monaco.editor.createModel(original, language), right = monaco.editor.createModel(modified, language);
+  const view = monaco.editor.createDiffEditor(body, {theme: 'darcula', fontFamily: FONT, fontSize: 13, lineHeight: 20, readOnly: true,
+    automaticLayout: true, minimap: {enabled: false}, scrollBeyondLastLine: false, renderSideBySide: true});
+  view.setModel({original: left, modified: right});
+  const close = () => { view.dispose(); left.dispose(); right.dispose(); box.remove(); removeEventListener('keydown', esc, true); if (S.active) editor.focus(); };
+  const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+  addEventListener('keydown', esc, true);
+  for (const [label, fn] of [...actions, ['Close', () => {}]]) {
+    const b = el('button', null, label);
+    b.onclick = () => { close(); fn(); };
+    head.append(b);
+  }
+  return close;
+}
+
+const host = {
+  get api() { return api; }, get monaco() { return monaco; }, get editor() { return editor; },
+  roots: () => [...S.roots], tabFor: (path) => S.tabs.find((t) => t.key === keyOf(path)) || null,
+  openFile, revealAt, toast, el, escapeHtml, keyOf, join, basename, dirname, relPath, rootColor, rootIndexOf,
+  showMenu, addView, showDiff, on,
+};
+
+async function loadExtensions() {
+  let found = [];
+  try { found = await api.extensions(); } catch (e) { return; }
+  for (const ext of found) {
+    try {
+      new Function('host', `${ext.code}\n//# sourceURL=${encodeURI('slate-extension/' + ext.name)}`)(host);  // named in stack traces and the dev tools
+    } catch (e) {
+      toast(`Extension ${ext.name} failed: ${errMsg(e)}`);
+      note('js_error', {message: `extension ${ext.name}: ${errMsg(e)}`.slice(0, 300), stack: e.stack});
+    }
+  }
 }
 
 // ---------------------------------------------------------------- layout, status, keys

@@ -99,6 +99,7 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #console-out .sys { color: var(--fg-dim); font-style: italic; }
 #console-out .echo { display: block; }
 #console-out .echo .p { color: #606366; }
+#console-out img.plot { display: block; max-width: 100%; height: auto; margin: 4px 0; border-radius: 2px; }
 #console-input-row { display: flex; align-items: flex-start; border-top: 1px solid #353535; padding: 3px 0 3px 10px; }
 #console-input-row .prompt { font: 13px/19px var(--mono); color: #606366; margin-right: 6px; }
 #console-in { flex: 1; height: 19px; }
@@ -111,6 +112,10 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #st-lint.err { color: var(--error); }
 
 /* overlays */
+#diff { position: fixed; inset: 40px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 8px 30px #0009; z-index: 55; display: flex; flex-direction: column; }
+.diff-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.diff-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-body { flex: 1; min-height: 0; }
 #finder { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); width: min(720px, 90vw); background: var(--panel); border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 8px 30px #0009; z-index: 50; display: flex; flex-direction: column; }
 #finder-input { margin: 8px; font-size: 14px; }
 #finder-list { max-height: 60vh; overflow: auto; padding-bottom: 6px; }

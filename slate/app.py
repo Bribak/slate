@@ -10,7 +10,7 @@ from pathlib import Path
 
 import webview
 
-from slate import __version__, fonts, install, instance, navigate, repl, state, style, usage, workspace
+from slate import __version__, fonts, hints, install, instance, navigate, repl, state, style, usage, workspace
 
 WEB = Path(__file__).with_name('web')
 # WebView2 flags, measured with tools/bench.py on a 250% screen (8 tabs, console open): together about 220 MB less than plain GPU
@@ -44,6 +44,12 @@ class Api:
 
     def editor_fonts(self):
         return fonts.jetbrains_mono()
+
+    def extensions(self):
+        """[{name, code}] for each personal page script in %APPDATA%/slate/extensions (app.js loadExtensions). The folder is
+        not part of slate, so what is in it reaches no one else."""
+        folder = state.STATE_FILE.parent / 'extensions'
+        return [{'name': f.name, 'code': f.read_text(encoding = 'utf-8')} for f in sorted(folder.glob('*.js'))] if folder.is_dir() else []
 
     def page_ready(self):
         """Called once the page has restored its session; returns the files and folders it was asked to open meanwhile."""
@@ -120,6 +126,10 @@ class Api:
 
     def format(self, path, text):
         return style.format_source(path, text, self._state.get('style_script'))
+
+    def hints(self, path, name, qualifier = None, roots = (), console = None):
+        """Signatures and docstrings for a call or a name, from the open projects' own code (slate/hints.py)."""
+        return hints.lookup(path, name, qualifier = qualifier, roots = list(roots), console = console)
 
     def goto(self, path, text, line, col, roots):
         return navigate.goto(path, text, line, col, roots)

@@ -11,7 +11,7 @@ import tokenize
 import warnings
 from pathlib import Path
 
-from slate import state
+from slate import hints, state
 
 DEFAULT_SCRIPT = Path.home() / 'Documents' / 'glycowork' / '.github' / 'scripts' / 'check_style.py'
 _modules, _signatures = {}, {}
@@ -133,6 +133,7 @@ def _lint(path, source, fallback):
     markers, tree = compile_problems(path, source)
     if tree is None:
         return {'markers': markers}
+    hints.remember(path, tree, source)  # the tree is at hand, and a call being typed later will not parse
     root, script = find_script(path, fallback = fallback)
     if script is None:
         return {'markers': markers, 'note': 'no check_style.py found'}

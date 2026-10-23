@@ -45,6 +45,8 @@ class Console:
     def start(self, cwd = None, paths = (), python = None):
         self.stop()
         env = dict(os.environ, PYTHONIOENCODING = 'utf-8', PYTHONUNBUFFERED = '1')
+        env.setdefault('MPLBACKEND', 'module://slate_inline')  # figures in the console (repl_child.py); a backend set by hand wins
+        env.setdefault('GLYCOWORK_RICH_DISPLAY', '1')  # GlycoDraw then returns its drawing, which shows itself, rather than a matplotlib figure
         if python and not Path(python).is_file():
             self._push('e', f'console_python {python} not found; using the Python slate runs on\n')
             python = None
