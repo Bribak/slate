@@ -71,8 +71,9 @@ Close slate, then edit `%APPDATA%\slate\state.json` (it holds your session too, 
 * `"console_python"`: the python.exe the console runs, e.g. `"C:\\Users\\you\\miniconda3\\envs\\glyco\\python.exe"` or a project's `.venv\\Scripts\\python.exe`. Without it, the console uses the Python slate runs on.
 * `"style_script"`: the `check_style.py` used for files outside any project with its own (default: `Documents\glycowork\.github\scripts\check_style.py`).
 * `"autosave": false`: turns off saving when the window loses focus.
+* `"usage_log": false`: turns off the local usage log (see Development).
 * `"gpu": false`: software rendering, saving about another 100 MB. On high-resolution screens it is noticeably slower: at 250% scaling a keystroke took 52 ms to appear instead of 22 ms.
 
 ## Development
 
-`python -m slate --debug` opens slate with WebView2's developer tools. `python tools/bench.py LABEL [--flags "<chromium flags>"]` measures startup, scroll and typing latency and RAM per process in a real window, with an isolated session; run it before and after any change that could affect speed or memory. `python -m slate.devserver` serves the page at http://localhost:8765 to an ordinary browser, with the same backend over HTTP and a separate session.
+`python -m slate --debug` opens slate with WebView2's developer tools. `python tools/bench.py LABEL [--flags "<chromium flags>"]` measures startup, scroll and typing latency and RAM per process in a real window, with an isolated session; run it before and after any change that could affect speed or memory. `python -m slate.usage [days]` summarises `%APPDATA%\slate\usage.jsonl`, a local log of which calls ran and how long they took, slate's keys, errors with their stack traces, and window and monitor changes. It holds no file contents and is never sent anywhere. `python -m slate.devserver` serves the page at http://localhost:8765 to an ordinary browser, with the same backend over HTTP and a separate session.

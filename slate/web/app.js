@@ -8,6 +8,7 @@ const FONT = "'slate mono', 'JetBrains Mono', 'Cascadia Mono', Consolas, monospa
 const S = {
   roots: [], tabs: [], active: null, mru: [], expanded: new Set(), closed: [], history: [],
   view: 'files', sidebarWidth: 260, sidebarOpen: true, consoleHeight: 240, consoleOpen: false, autosave: true,
+  ready: false,  // the saved session is restored
   pathOf: new Map(),  // model uri -> real path, since Monaco's uris lower-case the drive letter
 };
 let api, monaco, editor, consoleInput;
@@ -56,12 +57,64 @@ function relPath(path) {
 
 const rootColor = (i) => (i < 0 ? '#606366' : ROOT_COLORS[i % ROOT_COLORS.length]);
 
+// ---------------------------------------------------------------- usage log (slate/usage.py: python -m slate.usage)
+
+const usage = {calls: {}, keys: {}, long: [0, 0, 0], events: [], seen: new Set()};
+
+function note(kind, fields) {
+  const key = kind + fields.call + fields.message;
+  if (usage.seen.has(key)) return;  // each distinct error once per session; the call counts keep the totals
+  usage.seen.add(key);
+  usage.events.push({kind, ...fields, stack: String(fields.stack || '').slice(0, 2000)});
+}
+
+// The API with every call timed: count, total ms, max ms and failures per method, plus each call slower than a second.
+function track(raw) {
+  return new Proxy(raw, {get(target, name) {
+    const fn = target[name];
+    if (typeof fn !== 'function' || name === 'log_usage') return fn;
+    return (...args) => {
+      const t0 = performance.now();
+      const done = (e) => {
+        const ms = performance.now() - t0;
+        const c = usage.calls[name] || (usage.calls[name] = [0, 0, 0, 0]);
+        c[0]++; c[1] += ms; c[2] = Math.max(c[2], ms);
+        if (e) { c[3]++; note('api_error', {call: name, message: String(e.message || e).slice(0, 300), stack: e.stack}); }
+        if (ms > 1000 && name !== 'pick_folder') usage.events.push({kind: 'slow', call: name, ms: Math.round(ms)});
+      };
+      return Promise.resolve(fn.apply(target, args)).then((r) => { done(); return r; }, (e) => { done(e); throw e; });
+    };
+  }});
+}
+
+function flushUsage() {
+  if (!api || !(Object.keys(usage.calls).length || Object.keys(usage.keys).length || usage.long[0] || usage.events.length)) return;
+  const calls = {};
+  for (const [name, [n, total, worst, errors]] of Object.entries(usage.calls)) calls[name] = [n, Math.round(total), Math.round(worst), errors];
+  const batch = [{kind: 'activity', calls, keys: usage.keys, long: usage.long.map(Math.round)}, ...usage.events];
+  Object.assign(usage, {calls: {}, keys: {}, long: [0, 0, 0], events: []});
+  api.log_usage(batch).catch(() => {});
+}
+
+addEventListener('error', (e) => note('js_error', {message: String(e.message).slice(0, 300), where: `${e.filename}:${e.lineno}:${e.colno}`, stack: e.error && e.error.stack}));
+// Monaco rejects with 'Canceled' whenever it drops work it no longer needs, which is not an error
+addEventListener('unhandledrejection', (e) => (e.reason && e.reason.name === 'Canceled') || note('js_error', {message: String((e.reason && e.reason.message) || e.reason).slice(0, 300), stack: e.reason && e.reason.stack}));
+try {
+  new PerformanceObserver((list) => {
+    for (const t of list.getEntries()) {
+      usage.long[0]++;  // tasks over 50 ms on the page's thread, which delay keystrokes and frames
+      if (t.duration > 200) usage.long[1]++;
+      usage.long[2] = Math.max(usage.long[2], t.duration);
+    }
+  }).observe({type: 'longtask'});
+} catch (e) { /* no long-task timing in this browser */ }
+
 // ---------------------------------------------------------------- boot
 
 function boot() {
   if (boot.done) return;
   boot.done = true;
-  api = window.pywebview.api;
+  api = track(window.pywebview.api);
   api.get_state().then((info) => {
     S.python = info.python;
     S.home = info.home;
@@ -94,8 +147,8 @@ async function init(saved) {
   registerSlatePython(monaco);
   await loadFonts();
   editor = monaco.editor.create($('editor'), {
-    model: null, theme: 'darcula', fontFamily: FONT, fontSize: 13, lineHeight: 20,  // PyCharm's defaults: size 13, line spacing 1.2 automaticLayout: true,
-    minimap: {enabled: false}, scrollBeyondLastLine: false, bracketPairColorization: {enabled: false},
+    model: null, theme: 'darcula', fontFamily: FONT, fontSize: 13, lineHeight: 20,  // PyCharm's defaults: size 13, line spacing 1.2
+    automaticLayout: true, minimap: {enabled: false}, scrollBeyondLastLine: false, bracketPairColorization: {enabled: false},
     guides: {indentation: true, bracketPairs: false}, stickyScroll: {enabled: true}, mouseWheelZoom: true,
     renderWhitespace: 'selection', fixedOverflowWidgets: true, unicodeHighlight: {ambiguousCharacters: false},
     wordBasedSuggestions: 'allDocuments', definitionLinkOpensInPeek: false, 'semanticHighlighting.enabled': false,
@@ -130,10 +183,18 @@ async function init(saved) {
   else renderTabs();
   if (saved.consoleOpen) toggleConsole(true);
   updateStatus();
+  S.ready = true;
+  drainLints();  // the front tab's check, started by activate, goes first
   await openPaths(await api.page_ready());  // files double-clicked in Explorer, before or while slate was starting
   setInterval(checkDisk, 2000);
+  setInterval(flushUsage, 60000);
+  usage.events.push({kind: 'ready', ms: Math.round(performance.now()), tabs: S.tabs.length, roots: S.roots.length, dpr: devicePixelRatio});
+  addEventListener('resize', debounce(() => {
+    const box = $('editor'), info = editor.getLayoutInfo();
+    usage.events.push({kind: 'resize', size: [innerWidth, innerHeight], dpr: devicePixelRatio, editor: [info.width, info.height], box: [box.clientWidth, box.clientHeight]});
+  }, 1000));
   window.addEventListener('focus', () => { api.set_background(false); checkDisk(); renderTree(); });
-  window.addEventListener('blur', () => { api.set_background(true); if (S.autosave) S.tabs.filter((t) => isDirty(t) && !t.deleted && !t.conflict).forEach((t) => save(t, true)); });
+  window.addEventListener('blur', () => { api.set_background(true); flushUsage(); if (S.autosave) S.tabs.filter((t) => isDirty(t) && !t.deleted && !t.conflict).forEach((t) => save(t, true)); });
 }
 
 // ---------------------------------------------------------------- tabs and files
@@ -178,7 +239,7 @@ async function openFile(path, opts = {}) {
       model.onDidChangeContent(() => onEdit(tab));
       const at = S.active && !opts.background ? S.tabs.indexOf(S.active) + 1 : S.tabs.length;
       S.tabs.splice(at, 0, tab);
-      if (model.getLanguageId() === 'py') lintSoon(tab, 50);
+      if (model.getLanguageId() === 'py') lintLater(tab);
     }
   }
   if (opts.background) return tab;
@@ -215,6 +276,7 @@ function activate(tab, {mru = true} = {}) {
   S.active = tab;
   if (mru) S.mru = [tab.key, ...S.mru.filter((k) => k !== tab.key)];
   editor.setModel(tab.model);
+  if (!tab.linted && tab.model.getLanguageId() === 'py') lint(tab);  // ahead of the background tabs still queued
   if (tab.viewState) editor.restoreViewState(tab.viewState);
   editor.focus();
   $('empty').classList.add('hidden');
@@ -460,8 +522,31 @@ function lintSoon(tab, delay = 400) {
   tab.lintTimer = setTimeout(() => lint(tab), delay);
 }
 
+// Newly opened tabs are checked one at a time, after the one in front: Python runs one check at a time anyway, and at
+// startup eight tabs at once left the visible one waiting about 2 s behind the others.
+const lintQueue = [];
+let lintDraining = false;
+function lintLater(tab) {
+  lintQueue.push(tab);
+  if (S.ready) drainLints();
+}
+
+async function drainLints() {
+  if (lintDraining) return;
+  lintDraining = true;
+  try {
+    while (lintQueue.length) {
+      const tab = lintQueue.shift();
+      if (!tab.linted && !tab.model.isDisposed()) await lint(tab);
+    }
+  } finally {
+    lintDraining = false;
+  }
+}
+
 async function lint(tab) {
   if (tab.model.isDisposed()) return;
+  tab.linted = true;
   const version = tab.model.getVersionId();
   let result;
   try {
@@ -1037,8 +1122,9 @@ window.slate = {
       if (kind === 'o' || kind === 'e') appendOut(payload, kind);
       else if (kind === 'ready') appendOut(`Python ${payload} · variables persist until Restart · Enter runs, Shift+Enter adds a line\n`, 'sys');
       else if (kind === 'done') consoleBusy = Math.max(0, consoleBusy - 1);
+      // exit() sends 'exit' and then 'stopped' with code 0, which needs no second line
       else if (kind === 'exit') appendOut('exit() called; the next command starts a fresh interpreter\n', 'sys');
-      else if (kind === 'stopped') { consoleBusy = 0; appendOut(`interpreter stopped${payload != null ? ` (exit code ${payload})` : ''}\n`, 'sys'); }
+      else if (kind === 'stopped') { consoleBusy = 0; if (payload !== 0) appendOut(`interpreter stopped${payload != null ? ` (exit code ${payload})` : ''}\n`, 'sys'); }
     }
     $('console-busy').classList.toggle('hidden', consoleBusy === 0);
   },
@@ -1097,11 +1183,11 @@ function updateStatus() {
   const lint = $('st-lint');
   lint.className = '';
   if (tab && tab.model.getLanguageId() === 'py') {
-    const errors = (tab.markers || []).filter((m) => m.severity === 'error').length;
+    const error = (tab.markers || []).find((m) => m.severity === 'error');
     const n = (tab.markers || []).length;
-    lint.textContent = errors ? `✕ ${tab.markers.find((m) => m.severity === 'error').code} line ${tab.markers.find((m) => m.severity === 'error').line}` : n ? `⚠ ${n} style` : tab.lintNote ? 'style: n/a' : '✓ style';
+    lint.textContent = error ? `✕ ${error.code} line ${error.line}` : n ? `⚠ ${n} style` : tab.lintNote ? 'style: n/a' : '✓ style';
     lint.title = tab.lintNote || 'Style findings in this file (F8: next)';
-    if (errors) lint.classList.add('err');
+    if (error) lint.classList.add('err');
     else if (n) lint.classList.add('warn');
   } else {
     lint.textContent = '';
@@ -1132,7 +1218,7 @@ const persist = debounce(() => {
 }, 500);
 
 function comboOf(e) {
-  let key = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase();
+  let key = e.key.toLowerCase();
   if (e.code === 'Backquote' || (e.ctrlKey && (e.key === 'ö' || e.key === 'Ö'))) key = '`';  // Nordic layouts: the § key or Ö, as in VS Code
   if (e.code === 'Tab') key = 'tab';
   return (e.ctrlKey ? 'ctrl+' : '') + (e.shiftKey ? 'shift+' : '') + (e.altKey ? 'alt+' : '') + key;
@@ -1144,7 +1230,7 @@ function bindUi() {
     'ctrl+shift+f': () => showView('search'), 'ctrl+shift+e': () => showView('files'),
     'ctrl+b': () => { S.sidebarOpen = !S.sidebarOpen; layout(); persist(); },
     'ctrl+`': () => toggleConsole(), 'ctrl+s': () => save(), 'ctrl+w': () => closeTab(S.active), 'ctrl+f4': () => closeTab(S.active),
-    'ctrl+shift+t': () => { const p = S.closed.pop(); if (p) openFile(p); },
+    'ctrl+shift+t': () => { const p = S.closed.pop(); if (p) { openFile(p); persist(); } },
     'ctrl+tab': () => mruStep(1), 'ctrl+shift+tab': () => mruStep(-1),
     'ctrl+pagedown': () => cycleTab(1), 'ctrl+pageup': () => cycleTab(-1),
     'alt+shift+l': revealActiveInTree,
@@ -1156,8 +1242,8 @@ function bindUi() {
       if (e.key === 'ArrowUp') { e.preventDefault(); moveFinder(-1); return; }
       if (e.key === 'Enter') { e.preventDefault(); pickFinder(finderSel); return; }
     }
-    const fn = keys[comboOf(e)];
-    if (fn) { e.preventDefault(); e.stopPropagation(); fn(); }
+    const combo = comboOf(e), fn = keys[combo];
+    if (fn) { e.preventDefault(); e.stopPropagation(); usage.keys[combo] = (usage.keys[combo] || 0) + 1; fn(); }
   }, true);
   addEventListener('keyup', (e) => {
     if (e.key === 'Control' && mruCycle !== null) {

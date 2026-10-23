@@ -5,11 +5,12 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import webview
 
-from slate import __version__, fonts, install, instance, navigate, repl, state, style, workspace
+from slate import __version__, fonts, install, instance, navigate, repl, state, style, usage, workspace
 
 WEB = Path(__file__).with_name('web')
 # WebView2 flags, measured with tools/bench.py on a 250% screen (8 tabs, console open): together about 220 MB less than plain GPU
@@ -23,9 +24,11 @@ class Api:
     def __init__(self):
         self._window = None
         self._state = state.load()
+        usage.enabled = self._state.get('usage_log', True)
         self._console = repl.Console(self._console_emit)
         self._opens, self._ready, self._lock = [], False, threading.Lock()
         self._hwnd, self._dpi = None, None
+        self._started = time.time()
 
     # session
     def get_state(self):
@@ -33,7 +36,7 @@ class Api:
 
     def save_state(self, new_state):
         new_state = dict(new_state)
-        for key in ('placement', 'style_script', 'gpu', 'console_python'):  # set by hand or by Python, never by the page, so a page save must not drop them
+        for key in ('placement', 'style_script', 'gpu', 'console_python', 'usage_log'):  # set by hand or by Python, never by the page, so a page save must not drop them
             if key in self._state:
                 new_state[key] = self._state[key]
         self._state = new_state
@@ -70,6 +73,11 @@ class Api:
             if core is not None:
                 core.MemoryUsageTargetLevel = Level.Low if background else Level.Normal
         form.Invoke(Func[Type](apply))
+
+    def log_usage(self, events):
+        """The page's share of the usage log: call timings, keys and errors, sent about once a minute."""
+        for event in events:
+            usage.record(**event)
 
     def set_dirty(self, dirty):
         self._window.confirm_close = bool(dirty)  # read by pywebview when the window is about to close
@@ -137,18 +145,28 @@ class Api:
 
     def _on_shown(self):
         self._dpi = instance.monitor_dpi(self._hwnd)  # only DPI changes after this are the user's moves
+        usage.record('shown', dpi = self._dpi, seconds = round(time.time() - self._started, 2))
         if (self._state.get('placement') or {}).get('maximized'):
             self._window.maximize()
 
     def _on_moved(self, x = None, y = None):
         if self._dpi:
-            self._dpi = instance.follow_dpi(self._hwnd, self._dpi)
+            old, self._dpi = self._dpi, instance.follow_dpi(self._hwnd, self._dpi)
+            if self._dpi != old:
+                usage.record('monitor', dpi = self._dpi, previous = old)
+
+    def _on_maximized(self):
+        usage.record('maximized', dpi = self._dpi)
+
+    def _on_restored(self):
+        usage.record('restored', dpi = self._dpi)
 
     def _on_closing(self):
         self._state['placement'] = instance.get_placement(self._hwnd)
         state.save(self._state)
 
     def _shutdown(self):
+        usage.record('end', seconds = round(time.time() - self._started))
         self._console.stop()
         instance.release()
 
@@ -164,6 +182,8 @@ def main():
     # set first, pywebview's later SetProcessDPIAware has no effect.
     ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     api = Api()
+    usage.record('start', version = __version__, python = sys.version.split()[0], gpu = api._state.get('gpu', True), files = len(paths),
+                 console_python = bool(api._state.get('console_python')))
     api._open(paths)
     instance.serve(api._open)
     # software rendering saves another ~100 MB, but on a 250% screen a keystroke took 52 ms to show instead of 22
@@ -177,6 +197,8 @@ def main():
     window.events.before_show += api._on_before_show
     window.events.shown += api._on_shown
     window.events.moved += api._on_moved
+    window.events.maximized += api._on_maximized
+    window.events.restored += api._on_restored
     window.events.closing += api._on_closing
     window.events.closed += api._shutdown
     webview.start(http_server = True, debug = '--debug' in sys.argv, private_mode = False,

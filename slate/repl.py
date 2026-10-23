@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+from slate import usage
+
 CHILD = Path(__file__).with_name('repl_child.py')
 FLUSH_EVERY = 0.05
 MAX_CHUNK = 200_000
@@ -75,9 +77,11 @@ class Console:
                 for key, value in msg.items():
                     self._push(key, value)
         code = proc.wait()
-        if proc is self._proc:
+        if proc is self._proc:  # not stopped by slate: the code exited, or the interpreter crashed
             self._proc = None
             self._push('stopped', code)
+            if code:  # 0 is exit() or the end of input
+                usage.record('console_exit', code = code)
 
     def _read_err(self, proc):
         decoder = codecs.getincrementaldecoder('utf-8')(errors = 'replace')

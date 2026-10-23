@@ -83,8 +83,9 @@ def register():
 
 
 def shortcut():
-    script = (f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{SHORTCUT}'); $s.TargetPath = '{EXE}'; "
-              f"$s.IconLocation = '{EXE},0'; $s.Description = 'A small Python editor'; $s.Save()")
+    quote = lambda path: str(path).replace("'", "''")  # a user name like O'Brien would end the PowerShell string
+    script = (f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{quote(SHORTCUT)}'); $s.TargetPath = '{quote(EXE)}'; "
+              f"$s.IconLocation = '{quote(EXE)},0'; $s.Description = 'A small Python editor'; $s.Save()")
     subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script], check = True, capture_output = True)
 
 

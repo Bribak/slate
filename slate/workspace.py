@@ -47,7 +47,11 @@ def read_file(path):
 
 def write_file(path, text, encoding = 'utf-8'):
     p = Path(path)
-    p.write_bytes(text.encode(encoding))  # bytes, so the editor's line endings reach the disk untranslated
+    try:
+        data = text.encode(encoding)
+    except UnicodeEncodeError as e:
+        raise ValueError(f"this {encoding} file cannot hold '{text[e.start]}' (line {text.count(chr(10), 0, e.start) + 1})") from None
+    p.write_bytes(data)  # bytes, so the editor's line endings reach the disk untranslated
     return str(p.stat().st_mtime_ns)
 
 
