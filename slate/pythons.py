@@ -1,20 +1,27 @@
 """The Pythons the console can run, for the settings panel's picker: the open folders' virtual environments, conda
-environments, and the Pythons registered with Windows (PEP 514: python.org's installer, Anaconda). Versions are read from
-files next to each python.exe (pyvenv.cfg, conda-meta, the DLL's name), so listing them starts no process.
+environments, and the installed Pythons: on Windows those registered with it (PEP 514: python.org's installer, Anaconda),
+on macOS python.org's frameworks, Homebrew's, pyenv's and uv's. Versions are read from files next to each interpreter
+(pyvenv.cfg, conda-meta, the DLL's or the folder's name), so listing them starts no process.
 """
 import os
 import re
 import sys
-import winreg
 from pathlib import Path
+
+from slate.system import MAC, console_python
+
+if not MAC:
+    import winreg
 
 VENVS = ('.venv', 'venv', 'env', '.env')
 CONDA_HOMES = ('miniconda3', 'anaconda3', 'miniforge3', 'mambaforge')
+EXE = Path('bin', 'python') if MAC else Path('python.exe')  # an environment's interpreter, from its folder
+VENV_EXE = Path('bin', 'python') if MAC else Path('Scripts', 'python.exe')
 
 
 def version_of(python):
     """'3.11.5' (or '3.11'), or '' when nothing next to python.exe says."""
-    home = python.parent.parent if python.parent.name.lower() == 'scripts' else python.parent
+    home = python.parent.parent if python.parent.name.lower() in ('scripts', 'bin') else python.parent
     cfg = home / 'pyvenv.cfg'
     if cfg.is_file():
         m = re.search(r'^version(?:_info)?\s*=\s*(\d+\.\d+[\d.]*)', cfg.read_text(encoding = 'utf-8', errors = 'replace'), re.M)
@@ -28,7 +35,8 @@ def version_of(python):
         m = re.fullmatch(r'python3(\d+)\.dll', f.name, re.I)  # python311.dll; python3.dll is the stable ABI's
         if m:
             return f'3.{m.group(1)}'
-    return ''
+    m = re.fullmatch(r'python(3\.\d+)', python.name) or re.fullmatch(r'(?:python@)?(3\.\d+[\d.]*)', home.name)  # python3.12; Homebrew's python@3.12, Versions/3.12, pyenv's 3.11.5
+    return m.group(1) if m else ''
 
 
 def registered():
@@ -71,6 +79,18 @@ def value(key, name):
         return None
 
 
+def installed_mac():
+    """(python, source) for the Pythons installed on a Mac outside conda; /usr/bin/python3 is left out, since running it can
+    ask to install Apple's command line tools."""
+    home = Path.home()
+    found = [(p, 'python.org') for p in sorted(Path('/Library/Frameworks/Python.framework/Versions').glob('3.*/bin/python3'))]
+    for brew in ('/opt/homebrew', '/usr/local'):  # Apple silicon, Intel
+        found += [(p, 'Homebrew') for p in sorted(Path(brew, 'opt').glob('python@3.*/bin/python3'))]
+    found += [(p, 'pyenv') for p in sorted((home / '.pyenv' / 'versions').glob('*/bin/python'))]
+    found += [(p, 'uv') for p in sorted((home / '.local' / 'share' / 'uv' / 'python').glob('*/bin/python3'))]
+    return found
+
+
 def conda_envs():
     """Folders of conda environments: those conda lists in ~/.conda/environments.txt, and the usual install places."""
     home = Path.home()
@@ -78,9 +98,13 @@ def conda_envs():
     listed = home / '.conda' / 'environments.txt'
     if listed.is_file():
         envs += [Path(line.strip()) for line in listed.read_text(encoding = 'utf-8', errors = 'replace').splitlines() if line.strip()]
-    for base in [home, Path(os.environ.get('LOCALAPPDATA', home)), Path(os.environ.get('ProgramData', 'C:/ProgramData'))]:
-        for name in CONDA_HOMES:
-            if (base / name / 'python.exe').is_file():
+    if MAC:
+        bases = [home, home / 'opt', Path('/opt'), Path('/opt/homebrew/Caskroom/miniforge'), Path('/opt/homebrew/Caskroom/miniconda')]
+    else:
+        bases = [home, Path(os.environ.get('LOCALAPPDATA', home)), Path(os.environ.get('ProgramData', 'C:/ProgramData'))]
+    for base in bases:
+        for name in CONDA_HOMES + (('base',) if MAC else ()):  # Homebrew's casks keep the install in .../miniforge/base
+            if (base / name / EXE).is_file():
                 envs += [base / name] + [p for p in (base / name / 'envs').glob('*') if p.is_dir()]
     return envs
 
@@ -96,11 +120,10 @@ def find(roots):
             out.append({'path': str(python), 'version': version_of(python), 'label': label})
     for root in roots:
         for name in VENVS:
-            add(Path(root) / name / 'Scripts' / 'python.exe', f'{Path(root).name}\\{name}')
+            add(Path(root) / name / VENV_EXE, f'{Path(root).name}{os.sep}{name}')
     for env in conda_envs():
-        add(env / 'python.exe', f'conda: {env.name}')  # a base install by its folder (miniforge3), since apps such as PyMOL bring their own
-    for python, source in registered():
+        add(env / EXE, f'conda: {env.name}')  # a base install by its folder (miniforge3), since apps such as PyMOL bring their own
+    for python, source in installed_mac() if MAC else registered():
         add(python, source)
-    own = Path(sys.executable)
-    add(own.with_name('python.exe') if own.name.lower() == 'pythonw.exe' else own, "slate's own")
+    add(console_python(sys.executable), "slate's own")
     return out

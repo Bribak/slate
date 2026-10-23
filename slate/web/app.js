@@ -4,11 +4,12 @@
 
 const $ = (id) => document.getElementById(id);
 const ROOT_COLORS = ['#4A88C7', '#CC7832', '#6A8759', '#9876AA', '#BBB529', '#E06C75', '#56B6C2', '#D19A66'];
-const FONT = "'slate mono', 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace";  // 'slate mono' = PyCharm's own JetBrains Mono files, see loadFonts
+const FONT = "'slate mono', 'JetBrains Mono', 'Cascadia Mono', Consolas, Menlo, monospace";  // 'slate mono' = PyCharm's own JetBrains Mono files, see loadFonts
 const S = {
   roots: [], tabs: [], active: null, mru: [], expanded: new Set(), closed: [], history: [],
   view: 'files', sidebarWidth: 260, sidebarOpen: true, consoleHeight: 240, consoleOpen: false, autosave: true,
   ready: false,  // the saved session is restored
+  sep: '\\', mac: false,  // the platform's path separator, and whether this is macOS (Api.get_state)
   pathOf: new Map(),  // model uri -> real path, since Monaco's uris lower-case the drive letter
 };
 let api, monaco, editor, consoleInput;
@@ -16,7 +17,10 @@ let api, monaco, editor, consoleInput;
 const keyOf = (p) => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
 const basename = (p) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
 const dirname = (p) => p.replace(/[\\/][^\\/]*$/, '');
-const join = (a, b) => a.replace(/[\\/]+$/, '') + '\\' + b;
+const join = (a, b) => a.replace(/[\\/]+$/, '') + S.sep + b;
+const nativeSep = (p) => (S.sep === '\\' ? p.replace(/\//g, '\\') : p);  // a path as the platform writes it: C:\a\b, /Users/a/b
+// Key names in slate's own hints as a Mac writes them: Cmd for Ctrl (see comboOf), except Ctrl+` and Ctrl+Tab, which stay Ctrl
+const keyText = (s) => (S.mac ? s.replace(/Ctrl\+(`|Tab)/g, '⌃$1').replace(/Ctrl\+/g, '⌘').replace(/Alt\+/g, '⌥').replace(/Shift\+/g, '⇧') : s);
 const errMsg = (e) => String((e && e.message) || e).replace(/^\w*Error: /, '');
 const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 
@@ -114,8 +118,9 @@ try {
 // Monaco needs nothing from Python, so it loads while pywebview connects its bridge, and the fonts load alongside it
 window.MonacoEnvironment = {getWorkerUrl() {
   const base = new URL('vendor/', location.href).href;
-  return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(
-    `self.MonacoEnvironment = {baseUrl: '${base}'}; importScripts('${base}vs/base/worker/workerMain.js');`);
+  const code = `self.MonacoEnvironment = {baseUrl: '${base}'}; importScripts('${base}vs/base/worker/workerMain.js');`;
+  if (/Macintosh/.test(navigator.userAgent)) return URL.createObjectURL(new Blob([code], {type: 'text/javascript'}));  // WebKit runs no data: workers
+  return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(code);
 }};
 require.config({paths: {vs: 'vendor/vs'}});
 const monacoLoaded = new Promise((resolve) => require(['vs/editor/editor.main'], resolve));
@@ -126,6 +131,8 @@ function boot() {
   api = track(window.pywebview.api);
   Promise.all([api.get_state(), monacoLoaded, loadFonts()]).then(([info]) => {
     S.python = info.python;
+    S.sep = info.sep || '\\';
+    S.mac = !!info.mac;
     S.home = info.home;
     monaco = window.monaco;
     init(info.state || {});
@@ -177,6 +184,7 @@ async function init(saved) {
   S.consoleHeight = saved.consoleHeight || 240;
   S.autosave = saved.autosave !== false;
   bindUi();
+  if (S.mac) macLabels();
   setupConsole();
   layout();
   // files double-clicked in Explorer come first, so the one asked for shows before the rest of the session is back
@@ -991,7 +999,7 @@ function fileMenu(entry) {
   return [
     ['Open', () => openFile(entry.path)],
     ['Copy path', () => navigator.clipboard.writeText(entry.path)],
-    ['Reveal in Explorer', () => api.reveal(entry.path)],
+    [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(entry.path)],
   ];
 }
 
@@ -1000,7 +1008,7 @@ function dirMenu(entry, isRoot, rootIdx) {
     ['New file…', () => createIn(entry, false)],
     ['New folder…', () => createIn(entry, true)],
     ['Copy path', () => navigator.clipboard.writeText(entry.path)],
-    ['Reveal in Explorer', () => api.reveal(join(entry.path, '.'))],
+    [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(join(entry.path, '.'))],
   ];
   if (isRoot) items.push(['Remove from slate', () => removeRoot(rootIdx)]);
   return items;
@@ -1010,7 +1018,7 @@ async function createIn(entry, isDir) {
   const name = prompt(isDir ? 'New folder name' : 'New file name (may include subfolders, e.g. scripts/run.py)');
   if (!name) return;
   try {
-    const path = await api.create(join(entry.path, name.replace(/\//g, '\\')), isDir);
+    const path = await api.create(join(entry.path, nativeSep(name)), isDir);
     S.expanded.add(keyOf(entry.path));
     finderCache = null;
     await renderTree();
@@ -1090,8 +1098,8 @@ function renderFinder() {
     const name = el('span', 'name');
     name.innerHTML = mark(it.name, it.namePos);
     const where = el('span', 'where');
-    const rootName = it.i >= 0 ? basename(S.roots[it.i]) + '\\' : '';
-    const rel = it.rel.replace(/\//g, '\\');
+    const rootName = it.i >= 0 ? basename(S.roots[it.i]) + S.sep : '';
+    const rel = nativeSep(it.rel);
     const relShown = it.relPos.length ? mark(rel, it.relPos) : escapeHtml(rel.slice(0, Math.max(0, rel.length - it.name.length)));
     where.innerHTML = escapeHtml(rootName) + relShown;
     const dot = el('span', 'dot');
@@ -1153,7 +1161,7 @@ async function runSearch() {
       const head = el('div', 'sr-file');
       const dot = el('span', 'dot');
       dot.style.cssText = `width:8px;height:8px;border-radius:50%;flex:none;background:${rootColor(m.root)}`;
-      const dir = el('span', 'dir', basename(S.roots[m.root]) + '\\' + dirname('\\' + m.rel).replace(/^\\/, ''));
+      const dir = el('span', 'dir', basename(S.roots[m.root]) + S.sep + dirname(S.sep + m.rel).replace(/^[\\/]/, ''));
       head.append(dot, el('span', null, basename(m.rel)), dir);
       head.title = m.path;
       head.addEventListener('click', () => openFile(m.path));
@@ -1214,6 +1222,7 @@ function setupConsole() {
   add(K.UpArrow, () => historyStep(-1), '!suggestWidgetVisible && consoleOnFirstLine');
   add(K.DownArrow, () => historyStep(1), '!suggestWidgetVisible && consoleOnLastLine');
   add(M.CtrlCmd | K.KeyC, () => api.console_interrupt(), '!editorHasSelection');
+  if (S.mac) add(M.WinCtrl | K.KeyC, () => api.console_interrupt());  // Ctrl+C, as in a Mac's Terminal (WinCtrl is Ctrl on macOS)
   add(M.CtrlCmd | K.KeyL, clearConsole);
   add(K.Escape, () => { if (S.active) editor.focus(); }, '!suggestWidgetVisible');
   const onFirst = consoleInput.createContextKey('consoleOnFirstLine', true);
@@ -1380,8 +1389,8 @@ function nameConsole(ready) {
   const m = ready.match(/^(\S+) \((.*)\)$/);
   if (!m) return;
   let home = dirname(m[2]);
-  if (basename(home).toLowerCase() === 'scripts') home = dirname(home);
-  const name = /^\.?v?env$/i.test(basename(home)) ? basename(dirname(home)) + '\\' + basename(home) : basename(home);
+  if (['scripts', 'bin'].includes(basename(home).toLowerCase())) home = dirname(home);
+  const name = /^\.?v?env$/i.test(basename(home)) ? basename(dirname(home)) + S.sep + basename(home) : basename(home);
   $('console-title').textContent = `Python console · ${m[1]} · ${name}`;
   $('console-title').title = m[2];
 }
@@ -1600,7 +1609,7 @@ async function openSettings() {
   restart.id = 'settings-restart';
   restart.className = 'hidden';
   restart.onclick = () => { restart.classList.add('hidden'); if (!S.consoleOpen) toggleConsole(true, false); restartConsole(); };
-  body.append(el('div', 'settings-note', "A project's Python runs code from its files (Ctrl+Enter, F5) and the console when it starts or restarts with one of its files in front. Any Python 3.8 or newer works; packages come from it."), restart);
+  body.append(el('div', 'settings-note', keyText("A project's Python runs code from its files (Ctrl+Enter, F5) and the console when it starts or restarts with one of its files in front. Any Python 3.8 or newer works; packages come from it.")), restart);
 
   section('Editor');
   check('Save changed files when slate loses focus', S.autosave, (on) => { S.autosave = on; persist(); });
@@ -1610,7 +1619,7 @@ async function openSettings() {
     refreshGlycans();
   }, 'GlycoDraw, from the default Python above or a glycowork folder');
   const style = el('input');
-  style.placeholder = 'Documents\\glycowork\\.github\\scripts\\check_style.py';
+  style.placeholder = ['Documents', 'glycowork', '.github', 'scripts', 'check_style.py'].join(S.sep);
   style.value = v.style_script || '';
   style.spellcheck = false;
   style.onchange = async () => { await set('style_script', style.value.trim() || null); if (S.active && S.active.model.getLanguageId() === 'py') lint(S.active); };
@@ -1791,11 +1800,26 @@ const persist = debounce(() => {
   });
 }, 500);
 
+// 'ctrl+shift+f' and the like. On a Mac, Cmd stands in for Ctrl, as Monaco's own keys do; the Ctrl key itself is 'macctrl',
+// which keeps Ctrl+Tab, Ctrl+` and Ctrl+R as on a Mac's VS Code and PyCharm. Option changes the character a letter types
+// (Option+S is ß), so with Option the physical key counts.
 function comboOf(e) {
   let key = e.key.toLowerCase();
   if (e.code === 'Backquote' || (e.ctrlKey && (e.key === 'ö' || e.key === 'Ö'))) key = '`';  // Nordic layouts: the § key or Ö, as in VS Code
   if (e.code === 'Tab') key = 'tab';
-  return (e.ctrlKey ? 'ctrl+' : '') + (e.shiftKey ? 'shift+' : '') + (e.altKey ? 'alt+' : '') + key;
+  if (!S.mac) return (e.ctrlKey ? 'ctrl+' : '') + (e.shiftKey ? 'shift+' : '') + (e.altKey ? 'alt+' : '') + key;
+  if (e.altKey && /^Key[A-Z]$/.test(e.code)) key = e.code.slice(3).toLowerCase();
+  return (e.ctrlKey ? 'macctrl+' : '') + (e.metaKey ? 'ctrl+' : '') + (e.shiftKey ? 'shift+' : '') + (e.altKey ? 'alt+' : '') + key;
+}
+
+// The hints in index.html (titles, the empty editor's keys) with a Mac's key names.
+function macLabels() {
+  for (const e of document.querySelectorAll('[title]')) e.title = keyText(e.title);
+  for (const row of document.querySelectorAll('#empty > div')) {
+    const keys = [...row.querySelectorAll('kbd')];
+    const combo = keyText(keys.map((k) => k.textContent).join('+'));  // '⌘⇧F'
+    keys.forEach((k, i) => { k.textContent = i ? '' : combo; if (i) k.remove(); });
+  }
 }
 
 function bindUi() {
@@ -1811,6 +1835,11 @@ function bindUi() {
     'f5': runFile, 'shift+f10': runFile,  // F5 also no longer reloads the page
     'ctrl+alt+s': openSettings,  // PyCharm's
   };
+  if (S.mac) {  // Cmd stands in for Ctrl (comboOf), except where a Mac's VS Code and PyCharm keep the Ctrl key itself
+    for (const k of ['ctrl+tab', 'ctrl+shift+tab', 'ctrl+`']) { keys['mac' + k] = keys[k]; delete keys[k]; }
+    Object.assign(keys, {'ctrl+,': openSettings, 'macctrl+r': runFile, 'ctrl+alt+arrowright': () => cycleTab(1), 'ctrl+alt+arrowleft': () => cycleTab(-1)});
+    delete keys['ctrl+f4'];
+  }
   addEventListener('keydown', (e) => {
     if (!$('finder').classList.contains('hidden')) {
       if (e.key === 'Escape') { e.preventDefault(); closeFinder(); return; }

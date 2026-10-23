@@ -93,6 +93,10 @@ def changed():
     ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED, so Explorer rereads the associations
 
 
+def installed():
+    return EXE.is_file()
+
+
 def install(open_settings = True):
     if not CSC.is_file():
         raise SystemExit(f'{CSC} not found: slate.exe is compiled with the .NET Framework 4 compiler that ships with Windows')

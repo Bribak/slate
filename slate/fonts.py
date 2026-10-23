@@ -6,10 +6,14 @@ import base64
 import os
 from pathlib import Path
 
+from slate.system import MAC, native
+
 STYLES = {'Regular': ('normal', 'normal'), 'Italic': ('italic', 'normal')}  # slate draws nothing in bold
 
 
 def font_dirs():
+    if MAC:
+        return [Path(d) for d in native.font_dirs()]
     local = Path(os.environ.get('LOCALAPPDATA', '').removeprefix('\\\\?\\'))
     ides = list(Path(os.environ.get('ProgramFiles', r'C:\Program Files')).glob('JetBrains/*')) + list((local / 'Programs').glob('*'))
     ides.sort(key = lambda p: p.stat().st_mtime, reverse = True)  # the most recently installed IDE first

@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from slate import usage
+from slate.system import NO_WINDOW, console_python
 
 CHILD = Path(__file__).with_name('repl_child.py')
 FLUSH_EVERY = 0.05
@@ -47,8 +48,7 @@ class Console:
     def executable(python = None):
         """The python.exe that runs for a console Python setting. repl_child.py is stdlib-only, so any Python 3.8+ (a venv, a
         conda env) can run it; without one, or when it is gone, the Python slate runs on."""
-        python = Path(python) if python and Path(python).is_file() else Path(sys.executable)
-        return python.with_name('python.exe') if python.name.lower() == 'pythonw.exe' else python  # the child needs real stdio pipes
+        return console_python(python if python and Path(python).is_file() else sys.executable)  # the child needs real stdio pipes
 
     def start(self, cwd = None, paths = (), python = None):
         self.stop()
@@ -61,7 +61,7 @@ class Console:
         self.python = str(python)
         self._proc = subprocess.Popen([str(python), '-u', str(CHILD), *paths], stdin = subprocess.PIPE, stdout = subprocess.PIPE,
                                       stderr = subprocess.PIPE, cwd = cwd if cwd and os.path.isdir(cwd) else None, env = env,
-                                      creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                                      creationflags = NO_WINDOW)
         proc = self._proc
         threading.Thread(target = self._read_out, args = (proc,), daemon = True).start()
         threading.Thread(target = self._read_err, args = (proc,), daemon = True).start()

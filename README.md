@@ -1,11 +1,14 @@
 # slate
 
-A small Python editor for Windows, written as a light replacement for PyCharm. It is Monaco (the editor component of VS Code) in a WebView2 window, driven by Python. With eight files open and the console running it uses about 430 MB of RAM (Task Manager), and about 350 MB while another app is in front, where PyCharm used 4.5 GB on the same machine.
+A small Python editor for Windows and macOS, written as a light replacement for PyCharm. It is Monaco (the editor component of VS Code) in the system's own web view (WebView2 on Windows, WebKit on macOS), driven by Python. On Windows, with eight files open and the console running, it uses about 430 MB of RAM (Task Manager), and about 350 MB while another app is in front, where PyCharm used 4.5 GB on the same machine.
+
+macOS support is new. So far it is checked by an automated test that opens slate on GitHub's Macs (tools/smoke.py), not by daily use; please report what looks or feels wrong.
 
 ## Requirements
 
 * Windows 10 or 11. The WebView2 runtime and the .NET Framework 4 compiler that slate uses come with Windows.
-* Python 3.10 or newer, from python.org (tested with 3.12). slate runs on this Python; the console can use a different one (see Settings).
+* Or macOS 12 or newer. Everything slate uses to install itself comes with macOS.
+* Python 3.10 or newer (tested with 3.12): from python.org on Windows; on macOS from python.org, Homebrew, conda or pyenv. slate runs on this Python; the console can use a different one (see Settings).
 
 ## Install
 
@@ -17,12 +20,14 @@ A small Python editor for Windows, written as a light replacement for PyCharm. I
    ```
    pip install https://github.com/Bribak/slate/archive/refs/heads/main.zip
    ```
-2. Install slate as a Windows app, for your user only (no admin rights needed):
+2. Install slate as an app, for your user only (no admin rights needed):
    ```
    python -m slate --install
    ```
-   This adds slate to the Start menu and to Settings → Apps → Installed apps, and registers it for .py files.
-3. Make slate the default for .py files. Windows does not let programs set this themselves, so it is one click: on the Settings page that step 2 opened (Default apps → slate), click **Set default**. If you closed it, double-click any .py file instead and answer Windows' "How do you want to open this file?" with **slate** and **Always**.
+   On Windows this adds slate to the Start menu and to Settings → Apps → Installed apps, and registers it for .py files. On macOS it makes `~/Applications/slate.app`, which Launchpad, Spotlight and Finder's Open With list, and which you can keep in the Dock.
+3. On macOS, to open .py files with slate by double-clicking: select one in Finder, **File → Get Info**, choose slate under **Open with**, then **Change All**. The rest of this step is for Windows.
+
+   Make slate the default for .py files. Windows does not let programs set this themselves, so it is one click: on the Settings page that step 2 opened (Default apps → slate), click **Set default**. If you closed it, double-click any .py file instead and answer Windows' "How do you want to open this file?" with **slate** and **Always**.
 
    If slate is not in that list: click **Choose an app on your PC** at the bottom. Paste this into the **File name** box and press Enter, then click **Always**:
    ```
@@ -30,9 +35,9 @@ A small Python editor for Windows, written as a light replacement for PyCharm. I
    ```
    That is `C:\Users\<your user name>\AppData\Local\Programs\slate\slate.exe`. Paste the path rather than browsing, because File Explorer hides the AppData folder.
 
-Start slate from the Start menu, by double-clicking a .py file, or with `slate` in a terminal. Double-clicking more files while slate is open adds them as tabs to the open window instead of starting another one.
+Start slate from the Start menu or Launchpad, by double-clicking a .py file, or with `slate` in a terminal. Opening more files while slate is open adds them as tabs to the open window instead of starting another one; on macOS you can also drop files and folders on its Dock icon.
 
-Run `python -m slate --install` again after upgrading or moving Python. `python -m slate --uninstall`, or uninstalling slate under Installed apps, removes everything step 2 added.
+Run `python -m slate --install` again after upgrading or moving Python. `python -m slate --uninstall` removes everything step 2 added, as does uninstalling slate under Installed apps on Windows.
 
 **Updates.** Once a day slate asks GitHub for its newest version number. When there is a newer one, the status bar says "slate 0.2.0 is available"; click it to install it with pip (about 40 s), then restart slate. Turn the check off in Settings. To work on slate itself, clone it and install with `pip install -e .` instead; such a checkout gets no update notices.
 
@@ -41,7 +46,7 @@ Run `python -m slate --install` again after upgrading or moving Python. `python 
 * **Tabs from any number of projects.** Tabs wrap onto several rows. Each tab is underlined in its folder's color and labelled with its project. Open tabs, cursor positions and folders come back on restart.
 * **PyCharm-style colors and font.** Darcula colors and a Python grammar close to PyCharm's, with `self`, builtins, `def` names, decorators, keyword arguments, docstrings and f-string fields. The font is the JetBrains Mono that ships with PyCharm (or any JetBrains IDE) when one is installed, at PyCharm's default size; otherwise an installed JetBrains Mono, Cascadia Mono or Consolas.
 * **Errors before you run.** Every .py file is compiled as you type, so syntax and indentation errors, `return` outside a function and similar mistakes are underlined in red, the tab name turns red, and the status bar names the error and line. SyntaxWarnings such as an invalid `"\d"` escape are underlined too.
-* **Sharp on every monitor.** Text renders at each monitor's own scaling, and the window keeps its size when moved between a laptop screen and an external monitor. It reopens where it was closed, maximized or not.
+* **Sharp on every monitor.** Text renders at each monitor's own scaling, and the window keeps its size when moved between a laptop screen and an external monitor. It reopens where it was closed, maximized (zoomed) or not.
 * **Navigation.** Add project folders with **+** in the folder tree; several sit side by side. Ctrl+P finds a file by name across all of them (`name:120` jumps to line 120). Ctrl+Shift+F searches their contents. Ctrl+click or F12 goes to a definition: the open folders' own names (variables, functions, classes, methods, keyword arguments, imports) straight from the syntax tree, library code and attributes of objects through jedi.
 * **Function hints.** Typing a call to one of your projects' own functions shows its parameters with their `# comments`, highlighting the one you are typing. Hovering over its name shows the docstring. This covers functions defined or imported in the file, and in the console those imported earlier. Library functions such as pandas' get no hints.
 * **Console.** Ctrl+\` (Ctrl+Ö or the § key on Nordic keyboards) opens a Python console whose variables persist between runs. Enter runs the input, or adds a line while a block or bracket is still open. Shift+Enter always adds a line, and Ctrl+Enter always runs. Up and Down browse the history. **Interrupt** stops a run. **Restart** forgets all variables.
@@ -53,6 +58,8 @@ Run `python -m slate --install` again after upgrading or moving Python. `python 
 * **Autosave.** As in PyCharm, changed files are saved when the slate window loses focus.
 
 ## Keys
+
+On macOS, Cmd takes Ctrl's place, as in VS Code: Cmd+P, Cmd+S, Cmd+Enter. Ctrl+\`, Ctrl+Tab and Ctrl+C (interrupt) keep the Ctrl key. Cmd+, also opens the settings, Ctrl+R also runs the file (F5 needs Fn on most Mac keyboards), and Cmd+Option+Left/Right switch tabs. Alt is Option.
 
 | Key | Action |
 | --- | --- |
@@ -83,7 +90,7 @@ Ctrl+Alt+S, or the ⚙ at the right end of the status bar, opens the settings. C
 
 * **Console Python.** You can set a default and one per open folder. The list offers each folder's virtual environment (`.venv`, `venv`), your conda environments and the Pythons installed from python.org; **Browse…** picks any other python.exe. Code run from a file (Ctrl+Enter, F5) uses its project's Python. If the console is running another Python, it restarts first, which clears its variables. The console also uses the project's Python when it starts or restarts while one of that project's files is in front. Any Python 3.8 or newer works, and the console imports packages from it. Without a setting, the console uses the Python slate runs on.
 
-The settings live in `%APPDATA%\slate\state.json` with your session. You can also edit it by hand with slate closed:
+The settings live in `state.json` with your session: `%APPDATA%\slate\state.json` on Windows, `~/Library/Application Support/slate/state.json` on macOS. You can also edit it by hand with slate closed:
 
 * `"console_python"`: the default python.exe for the console, e.g. `"C:\\Users\\you\\miniconda3\\envs\\glyco\\python.exe"`. `"console_pythons"` maps a folder (lower case, as `"c:\\users\\you\\documents\\glycowork"`) to its own.
 * `"style_script"`: the `check_style.py` used for files outside any project with its own (default: `Documents\glycowork\.github\scripts\check_style.py`).
@@ -95,6 +102,8 @@ The settings live in `%APPDATA%\slate\state.json` with your session. You can als
 
 ## Development
 
-`python -m slate --debug` opens slate with WebView2's developer tools. `python tools/bench.py LABEL [--flags "<chromium flags>"] [--state '<state keys as JSON>'] [--line N]` measures startup, scroll and typing latency and RAM per process in a real window, with an isolated session; run it before and after any change that could affect speed or memory. `python tools/startup.py LABEL FILE` times a start that opens FILE, as a double-click does, in a copy of your session. `python -m slate.usage [days]` summarises `%APPDATA%\slate\usage.jsonl`, a local log of which calls ran and how long they took, slate's keys, errors with their stack traces, and window and monitor changes. It holds no file contents and is never sent anywhere. `python -m slate.devserver` serves the page at http://localhost:8765 to an ordinary browser, with the same backend over HTTP and a separate session.
+`python tools/smoke.py` opens slate in a real window with a throwaway session and checks the page, linting, the console, running cells, the settings panel, a key and a second launch; it prints the results and exits 1 if any failed. GitHub runs it on macOS and Windows for every push (`.github/workflows/smoke.yml`), and on macOS also installs slate.app and opens a file with it.
 
-**Personal extensions.** Every `.js` file in `%APPDATA%\slate\extensions` runs once when slate starts, with a `host` object that can add a sidebar view, open files, show a diff and react to focus and saves (see `host` in `slate/web/app.js`). The folder belongs to you, not to slate, so extensions stay on your machine. They run with slate's full rights: only put your own files there.
+`python -m slate --debug` opens slate with the web view's developer tools. `python tools/bench.py LABEL [--flags "<chromium flags>"] [--state '<state keys as JSON>'] [--line N]` measures startup, scroll and typing latency and RAM per process in a real window, with an isolated session; run it before and after any change that could affect speed or memory. `python tools/startup.py LABEL FILE` times a start that opens FILE, as a double-click does, in a copy of your session. `python -m slate.usage [days]` summarises `%APPDATA%\slate\usage.jsonl`, a local log of which calls ran and how long they took, slate's keys, errors with their stack traces, and window and monitor changes. It holds no file contents and is never sent anywhere. `python -m slate.devserver` serves the page at http://localhost:8765 to an ordinary browser, with the same backend over HTTP and a separate session. `bench.py` and `startup.py` measure through Windows tools and run on Windows only.
+
+**Personal extensions.** Every `.js` file in the `extensions` folder next to `state.json` runs once when slate starts, with a `host` object that can add a sidebar view, open files, show a diff and react to focus and saves (see `host` in `slate/web/app.js`). The folder belongs to you, not to slate, so extensions stay on your machine. They run with slate's full rights: only put your own files there.

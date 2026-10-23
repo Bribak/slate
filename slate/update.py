@@ -10,9 +10,9 @@ import subprocess
 import sys
 import urllib.request
 from importlib import metadata
-from pathlib import Path
 
 from slate import __version__
+from slate.system import NO_WINDOW, console_python, installer
 
 EVERY = 24 * 3600  # seconds between checks
 GITHUB = re.compile(r'github\.com/([^/]+)/([^/@#]+?)(?:\.git)?(?:/archive/(?:refs/heads/)?(.+?)\.(?:zip|tar\.gz))?/?$')
@@ -53,18 +53,15 @@ def newer(version):
 
 
 def install():
-    """pip-install the newest slate from where it came from, then refresh slate.exe (and its version under Installed apps)
-    if `--install` made one. Files of the running slate are replaced, but it keeps running the old code until restarted."""
-    from slate import install as installer
+    """pip-install the newest slate from where it came from, then refresh slate.exe (and its version under Installed apps) or
+    slate.app if `--install` made one. Files of the running slate are replaced, but it keeps running the old code until restarted."""
     source = origin()
     if source is None:
         raise RuntimeError('slate was not installed from GitHub with pip')
-    python = Path(sys.executable)
-    if python.name.lower() == 'pythonw.exe':
-        python = python.with_name('python.exe')
+    python = console_python(sys.executable)
     # run in Python's own folder: `-m slate` from a folder holding a slate checkout would import that instead
     run_python = lambda *args: subprocess.run([str(python), *args], capture_output = True, text = True, cwd = python.parent,
-                                              creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                                              creationflags = NO_WINDOW)
     # pip counts slate as up to date when it came from the same URL (for git: the same commit), whatever its version, so slate
     # alone is reinstalled first; the second install adds dependencies a new version may have, without reinstalling the others
     for force in (['--force-reinstall', '--no-deps'], []):
@@ -72,6 +69,6 @@ def install():
         if out.returncode:
             lines = (out.stderr or out.stdout).strip().splitlines()
             raise RuntimeError(lines[-1] if lines else f'pip stopped with exit code {out.returncode}')
-    if installer.EXE.is_file():
+    if installer().installed():
         run_python('-m', 'slate', '--install', '--no-settings')
     return run_python('-c', 'import slate; print(slate.__version__)').stdout.strip()

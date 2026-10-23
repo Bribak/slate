@@ -2,13 +2,13 @@
 import ctypes
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
-from slate import __version__, fonts, glycans, hints, install, instance, navigate, pythons, repl, state, style, update, usage, workspace
+from slate import __version__, fonts, glycans, hints, instance, navigate, pythons, repl, state, style, system, update, usage, workspace
+from slate.system import MAC, native
 
 WEB = Path(__file__).with_name('web')
 # WebView2 flags, measured with tools/bench.py on a 250% screen (8 tabs, console open): together about 220 MB less than plain GPU
@@ -17,6 +17,7 @@ WEB = Path(__file__).with_name('web')
 LEAN = '--enable-low-end-device-mode --disable-rgba-4444-textures --force-gpu-mem-available-mb=64'
 SOFTWARE = '--disable-gpu --disable-gpu-compositing'
 SETTINGS = ('console_python', 'console_pythons', 'style_script', 'gpu', 'usage_log', 'glycan_drawings', 'update_check')  # set_setting's keys
+project_key = lambda root: root.replace('/', '\\').rstrip('\\').lower()  # app.js keyOf, which keys console_pythons
 MIME_TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.ico': 'image/x-icon', '.png': 'image/png'}
 
 
@@ -33,7 +34,7 @@ class Api:
 
     # session
     def get_state(self):
-        return {'state': self._state, 'python': sys.version.split()[0], 'version': __version__, 'home': str(Path.home())}
+        return {'state': self._state, 'python': sys.version.split()[0], 'version': __version__, 'home': str(Path.home()), 'sep': os.sep, 'mac': MAC}
 
     def save_state(self, new_state):
         new_state = dict(new_state)
@@ -45,9 +46,8 @@ class Api:
 
     def settings(self, roots = ()):
         """What the settings panel shows: the values of SETTINGS and the Pythons found on this machine (slate/pythons.py)."""
-        own = Path(sys.executable)
         return {'values': {key: self._state.get(key) for key in SETTINGS}, 'pythons': pythons.find(list(roots)), 'version': __version__,
-                'own': str(own.with_name('python.exe') if own.name.lower() == 'pythonw.exe' else own), 'state_file': str(state.STATE_FILE)}
+                'own': str(system.console_python(sys.executable)), 'state_file': str(state.STATE_FILE)}
 
     def set_setting(self, key, value):
         """One of SETTINGS from the settings panel; None removes it, which means the default."""
@@ -63,7 +63,8 @@ class Api:
 
     def pick_python(self):
         import webview
-        result = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types = ('Python (python.exe)', 'All files (*.*)'))
+        types = () if MAC else ('Python (python.exe)', 'All files (*.*)')  # a Mac's python3 has no extension to filter by
+        result = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types = types)
         return result[0] if result else None
 
     def update_check(self):
@@ -110,10 +111,13 @@ class Api:
                 return
         if items:
             self._window.run_js(f'window.slate && slate.openPaths({json.dumps(items)})')
-        instance.bring_to_front('slate')
+        native.bring_to_front('slate')
 
     def set_background(self, background):
-        """Ask WebView2 to trim its memory while slate is not the active window (MemoryUsageTargetLevel, WebView2's own API)."""
+        """Ask WebView2 to trim its memory while slate is not the active window (MemoryUsageTargetLevel, WebView2's own API).
+        WKWebView on macOS has no such setting."""
+        if MAC:
+            return
         from System import Func, Type  # pythonnet, loaded by pywebview by now
         from Microsoft.Web.WebView2.Core import CoreWebView2MemoryUsageTargetLevel as Level
         form = self._window.native
@@ -163,7 +167,7 @@ class Api:
         return workspace.search(roots, query, regex, case)
 
     def reveal(self, path):
-        subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
+        system.reveal(path)
 
     # python
     def lint(self, path, text):
@@ -187,7 +191,7 @@ class Api:
     def _python_for(self, root):
         """The console's Python for a project folder: the one set for it, else the default, else None (slate's own)."""
         own = self._state.get('console_pythons') or {}
-        return (root and own.get(os.path.normcase(os.path.normpath(root)))) or self._state.get('console_python')
+        return (root and own.get(project_key(root))) or self._state.get('console_python')
 
     def console_run(self, code, cwd = None, paths = (), source = None):
         """cwd: the project folder the code belongs to, whose Python runs it. source: {file, line, text, whole} for code from a
@@ -205,19 +209,23 @@ class Api:
             self._window.run_js(f'window.slate && slate.consoleEvents({json.dumps(batch)})')
 
     def _on_before_show(self):
+        if MAC:  # before_show and closing run on the GUI thread, where the NSWindow may be used
+            if self._state.get('placement'):
+                native.set_placement(self._window.native, self._state['placement'])
+            return
         self._hwnd = self._window.native.Handle.ToInt64()  # before_show runs on the GUI thread, where the handle may be read
         if self._state.get('placement'):
-            instance.set_placement(self._hwnd, self._state['placement'])
+            native.set_placement(self._hwnd, self._state['placement'])
 
     def _on_shown(self):
-        self._dpi = instance.monitor_dpi(self._hwnd)  # only DPI changes after this are the user's moves
+        self._dpi = None if MAC else native.monitor_dpi(self._hwnd)  # only DPI changes after this are the user's moves; macOS rescales by itself
         usage.record('shown', dpi = self._dpi, seconds = round(time.time() - self._started, 2))
         if (self._state.get('placement') or {}).get('maximized'):
             self._window.maximize()
 
     def _on_moved(self, x = None, y = None):
         if self._dpi:
-            old, self._dpi = self._dpi, instance.follow_dpi(self._hwnd, self._dpi)
+            old, self._dpi = self._dpi, native.follow_dpi(self._hwnd, self._dpi)
             if self._dpi != old:
                 usage.record('monitor', dpi = self._dpi, previous = old)
 
@@ -228,11 +236,14 @@ class Api:
         usage.record('restored', dpi = self._dpi)
 
     def _on_closing(self):
-        self._state['placement'] = instance.get_placement(self._hwnd)
+        self._state['placement'] = native.get_placement(self._window.native if MAC else self._hwnd)
         state.save(self._state)
 
     def _shutdown(self):
+        if self._started is None:
+            return  # quitting from the macOS menu ends the process without closing the window, so this may come twice
         usage.record('end', seconds = round(time.time() - self._started))
+        self._started = None
         self._console.stop()
         self._drawer.stop()
         instance.release()
@@ -255,25 +266,30 @@ def serve_pages():
 
 
 def main():
-    if '--install' in sys.argv or '--uninstall' in sys.argv:  # --no-settings: an update refreshing slate.exe (slate/update.py)
-        return install.install('--no-settings' not in sys.argv) if '--install' in sys.argv else install.uninstall()
+    if '--install' in sys.argv or '--uninstall' in sys.argv:  # --no-settings: an update refreshing slate.exe or slate.app (slate/update.py)
+        installer = system.installer()
+        return installer.install('--no-settings' not in sys.argv) if '--install' in sys.argv else installer.uninstall()
     paths = [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith('--')]
     if instance.hand_off(paths):
         return  # a slate window is already open and took the files
     import webview  # only now, so a launch that hands its files to the running slate is done in 255 ms instead of 790
     serve_pages()
-    # Per-monitor DPI awareness (v2): WebView2 then renders at each monitor's own resolution. pywebview declares the process only
-    # system-aware, which makes Windows bitmap-stretch the window on a monitor whose scaling differs from the main one (blurry text);
-    # set first, pywebview's later SetProcessDPIAware has no effect.
-    ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    if not MAC:
+        # Per-monitor DPI awareness (v2): WebView2 then renders at each monitor's own resolution. pywebview declares the process only
+        # system-aware, which makes Windows bitmap-stretch the window on a monitor whose scaling differs from the main one (blurry text);
+        # set first, pywebview's later SetProcessDPIAware has no effect.
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     api = Api()
     usage.record('start', version = __version__, python = sys.version.split()[0], gpu = api._state.get('gpu', True), files = len(paths),
                  console_python = bool(api._state.get('console_python')))
     api._open(paths)
     instance.serve(api._open)
-    # software rendering saves another ~100 MB, but on a 250% screen a keystroke took 52 ms to show instead of 22
-    os.environ.setdefault('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', SOFTWARE if api._state.get('gpu') is False else LEAN)
-    placed = 0 if api._state.get('placement') else None  # with a saved placement, a fixed start position keeps WinForms from centring over it
+    if MAC:
+        native.prepare(api._open, api._shutdown)  # Finder's files, Cmd keys for the page, the app's name (slate/mac.py)
+    else:
+        # software rendering saves another ~100 MB, but on a 250% screen a keystroke took 52 ms to show instead of 22
+        os.environ.setdefault('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', SOFTWARE if api._state.get('gpu') is False else LEAN)
+    placed = 0 if api._state.get('placement') and not MAC else None  # with a saved placement, a fixed start position keeps WinForms from centring over it
     # min_size is fixed in physical pixels at the start monitor's scaling, so it stays small enough to allow the same size on a 100% monitor
     window = webview.create_window('slate', url = str(WEB / 'index.html'), js_api = api, width = 1400, height = 900, x = placed, y = placed,
                                    min_size = (300, 200), background_color = '#2B2B2B', text_select = True,
@@ -287,4 +303,4 @@ def main():
     window.events.closing += api._on_closing
     window.events.closed += api._shutdown
     webview.start(http_server = True, debug = '--debug' in sys.argv, private_mode = False,
-                  storage_path = str(state.STATE_FILE.parent / 'webview'), icon = str(WEB / 'slate.ico'))
+                  storage_path = str(state.STATE_FILE.parent / 'webview'), icon = str(WEB / ('slate.png' if MAC else 'slate.ico')))  # the Dock icon on macOS

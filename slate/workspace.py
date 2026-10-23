@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-TREE_HIDDEN = {'.git', '__pycache__', '.ipynb_checkpoints', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.idea'}
+TREE_HIDDEN = {'.DS_Store', '.git', '__pycache__', '.ipynb_checkpoints', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.idea'}
 WALK_SKIP = TREE_HIDDEN | {'node_modules', '.venv', 'venv', 'env', 'build', 'dist', '.tox', '.eggs', 'site-packages', '_proc', '_docs'}
 BINARY_EXT = {'.pkl', '.pickle', '.pt', '.pth', '.ckpt', '.npy', '.npz', '.h5', '.hdf5', '.parquet', '.feather', '.zip', '.gz', '.bz2',
               '.xz', '.7z', '.tar', '.whl', '.exe', '.dll', '.pyd', '.so', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.svgz',

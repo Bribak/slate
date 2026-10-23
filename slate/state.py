@@ -1,10 +1,10 @@
-"""Session state (open folders, tabs, layout, console history) in %APPDATA%/slate/state.json."""
+"""Session state (open folders, tabs, layout, console history) in state.json: %APPDATA%\\slate, or ~/Library/Application Support/slate."""
 import json
-import os
 import threading
-from pathlib import Path
 
-STATE_FILE = Path(os.environ.get('APPDATA', Path.home())) / 'slate' / 'state.json'
+from slate.system import data_dir
+
+STATE_FILE = data_dir() / 'state.json'
 _lock = threading.Lock()  # the page's saves and the window's closing save arrive on different threads, and share one .tmp file
 
 

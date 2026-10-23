@@ -12,6 +12,8 @@ import threading
 import time
 from pathlib import Path
 
+from slate.system import NO_WINDOW, console_python
+
 CHILD = Path(__file__).with_name('glycan_child.py')
 IDLE = 600
 
@@ -44,12 +46,10 @@ class Drawer:
 
     def _start(self, python, paths):
         self.stop()
-        python = Path(python if python and Path(python).is_file() else sys.executable)
-        if python.name.lower() == 'pythonw.exe':
-            python = python.with_name('python.exe')  # real stdio pipes, as for the console
+        python = console_python(python if python and Path(python).is_file() else sys.executable)  # real stdio pipes, as for the console
         env = dict(os.environ, PYTHONIOENCODING = 'utf-8', MPLBACKEND = 'Agg')
         self._proc = subprocess.Popen([str(python), '-u', str(CHILD), *paths], stdin = subprocess.PIPE, stdout = subprocess.PIPE,
-                                      stderr = subprocess.DEVNULL, env = env, creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                                      stderr = subprocess.DEVNULL, env = env, creationflags = NO_WINDOW)
         first = json.loads(self._proc.stdout.readline() or '{"error": "the drawing process did not start"}')
         if 'error' in first:
             self.stop()
