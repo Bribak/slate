@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>slate</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <nav id="side-tabs">
+      <button data-view="files" class="active" title="Folders (Ctrl+Shift+E)">Folders</button>
+      <button data-view="search" title="Find in files (Ctrl+Shift+F)">Search</button>
+    </nav>
+    <section id="files-view" class="view">
+      <div class="view-head"><span>OPEN FOLDERS</span><button id="add-root" title="Add a folder">+</button></div>
+      <div id="tree" tabindex="0"></div>
+    </section>
+    <section id="search-view" class="view hidden">
+      <div class="search-box">
+        <input id="search-input" placeholder="Find in all folders" spellcheck="false">
+        <button id="search-case" class="toggle" title="Match case">Aa</button>
+        <button id="search-regex" class="toggle" title="Regular expression">.*</button>
+      </div>
+      <div id="search-status"></div>
+      <div id="search-results"></div>
+    </section>
+  </aside>
+  <div id="side-sash" class="sash-v"></div>
+  <main id="main">
+    <div id="tabs"></div>
+    <div id="banner" class="hidden"></div>
+    <div id="editor-wrap">
+      <div id="editor"></div>
+      <div id="empty">
+        <div><kbd>Ctrl</kbd> <kbd>P</kbd> open a file</div>
+        <div><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd> find in files</div>
+        <div><kbd>Ctrl</kbd> <kbd>`</kbd> Python console</div>
+        <div><kbd>Shift</kbd> <kbd>Alt</kbd> <kbd>F</kbd> reformat to your style</div>
+      </div>
+    </div>
+    <div id="console-sash" class="sash-h hidden"></div>
+    <section id="console" class="hidden">
+      <div class="console-head">
+        <span id="console-title">Python console</span>
+        <span id="console-busy" class="hidden">running…</span>
+        <span class="spacer"></span>
+        <button id="console-interrupt" title="Interrupt (Ctrl+C in the console)">Interrupt</button>
+        <button id="console-restart" title="Restart the interpreter, forgetting all variables">Restart</button>
+        <button id="console-clear" title="Clear output (Ctrl+L)">Clear</button>
+        <button id="console-close" title="Hide (Ctrl+`)">✕</button>
+      </div>
+      <div id="console-out" tabindex="0"></div>
+      <div id="console-input-row"><span class="prompt">&gt;&gt;&gt;</span><div id="console-in"></div></div>
+    </section>
+    <footer id="status">
+      <span id="st-path"></span>
+      <span class="spacer"></span>
+      <span id="st-lint" title="Style findings in this file (F8: next)"></span>
+      <span id="st-pos"></span>
+      <span id="st-eol"></span>
+      <span id="st-enc"></span>
+      <span id="st-lang"></span>
+    </footer>
+  </main>
+</div>
+<div id="finder" class="hidden">
+  <input id="finder-input" placeholder="Open file (name, path, or name:line)" spellcheck="false">
+  <div id="finder-list"></div>
+</div>
+<div id="menu" class="hidden"></div>
+<div id="toast" class="hidden"></div>
+<script src="vendor/vs/loader.js"></script>
+<script src="python-language.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
