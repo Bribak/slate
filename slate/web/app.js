@@ -196,19 +196,22 @@ async function init(saved) {
   layout();
   // files double-clicked in Explorer come first, so the one asked for shows before the rest of the session is back
   const savedTabs = saved.tabs || [];
+  // The saved tabs and the extensions are asked for together with the launched files: each is a round trip over the bridge,
+  // and waiting for the extensions (111 ms in the usage log) before the first read held the whole session back
+  const reads = savedTabs.map((t) => {  // openFile reports failures
+    const read = api.read_file(t.path);
+    read.catch(() => {});
+    return read;
+  });
+  const extensions = api.extensions().catch(() => []);
   const launched = await api.page_ready();
   if (launched.length) {
     await openPaths(launched, new Map(savedTabs.map((t) => [keyOf(t.path), t.viewState])));
     S.launchedMs = Math.round(performance.now());
   }
-  await loadExtensions();  // before showView, which may restore a view an extension adds
+  loadExtensions(await extensions);  // before showView, which may restore a view an extension adds
   showView(S.view);
   renderTree();
-  const reads = savedTabs.map((t) => {  // all at once, since each is a round trip over the bridge; openFile reports failures
-    const read = api.read_file(t.path);
-    read.catch(() => {});
-    return read;
-  });
   for (const [i, t] of savedTabs.entries()) await openFile(t.path, {background: true, viewState: t.viewState, quiet: true, file: reads[i]});
   const rank = new Map(savedTabs.map((t, i) => [keyOf(t.path), i]));
   const rankOf = (tab) => (rank.has(tab.key) ? rank.get(tab.key) : rank.size);
@@ -223,6 +226,7 @@ async function init(saved) {
   persist();
   drainLints();  // the front tab's check, started by activate, goes first
   setInterval(checkDisk, 2000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDisk(); });
   setInterval(flushUsage, 60000);
   setTimeout(checkUpdate, 5000);  // well after startup; Python asks GitHub on a thread of its own
   usage.events.push({kind: 'ready', ms: Math.round(performance.now()), tabs: S.tabs.length, roots: S.roots.length, dpr: devicePixelRatio,
@@ -524,7 +528,7 @@ async function goPlace(step) {
 
 let checking = false;
 async function checkDisk() {
-  if (checking || !S.tabs.length) return;
+  if (checking || !S.tabs.length || document.hidden) return;  // minimised or covered: checked when it shows again (visibilitychange)
   checking = true;
   try {
     const stats = await api.stat_files(S.tabs.map((t) => t.path));
@@ -772,6 +776,9 @@ function registerProviders() {
   monaco.languages.registerDocumentSymbolProvider('py', {
     async provideDocumentSymbols(model) {
       const tab = S.tabs.find((t) => t.model === model), kind = SYMBOL_KIND(), n = model.getLineCount();
+      // Monaco's diff editor asks for each of its models' symbols, three times per diff view, which nothing shows: in the
+      // usage log that was 306 parses of 181 ms each in a day of the Changes extension's diffs
+      if (!tab) return [];
       let found = null;
       try { found = await api.outline(model.getValue(monaco.editor.EndOfLinePreference.LF)); } catch (e) { /* the last outline below */ }
       if (found && tab) tab.outline = found;
@@ -1394,9 +1401,12 @@ function showTable(tab) {
   const numeric = Array.from({length: ncol}, (_, c) => { const f = filled(c); return f.length > 0 && f.filter(isNumber).length >= 0.9 * f.length; });
   const glycanCol = Array.from({length: ncol}, (_, c) => c).find((c) => { const f = filled(c); return f.length && f.filter((v) => LINKAGE.test(v) || /^G\d{5}[A-Z]{2}$/.test(v.trim())).length >= 0.5 * f.length; });
   const charW = (() => { const ctx = document.createElement('canvas').getContext('2d'); ctx.font = `12px ${FONT}`; return ctx.measureText('0000000000').width / 10; })();
+  const room = $('editor-wrap').clientWidth;
   const widths = Array.from({length: ncol}, (_, c) => {
     const chars = Math.max((header[c] || '').length + 2, ...sample.map((r) => (r[c] || '').length));
-    return c === glycanCol ? Math.min(560, Math.round(Math.min(chars, 60) * charW) + 150) : Math.round(Math.min(Math.max(chars, 4), 40) * charW) + 18;
+    // the glycan column at most about 38% of the editor's width, so the samples stay in view next to an open row; the whole
+    // glycan is in the cell's tooltip and the row's panel
+    return c === glycanCol ? Math.min(Math.round(Math.min(chars, 60) * charW) + 150, Math.max(280, Math.round(room * 0.38))) : Math.round(Math.min(Math.max(chars, 4), 40) * charW) + 18;
   });
   const lefts = widths.reduce((acc, w, i) => (acc.push(acc[i] + w), acc), [0]), total = lefts[ncol];
   const glycanOf = (cell) => { const v = (cell || '').trim(); return /^G\d{5}[A-Z]{2}$/.test(v) ? glycans.ids.get(v) : LINKAGE.test(v) ? v : null; };
@@ -2682,9 +2692,7 @@ const host = {
   showMenu, addView, showDiff, on,
 };
 
-async function loadExtensions() {
-  let found = [];
-  try { found = await api.extensions(); } catch (e) { return; }
+function loadExtensions(found) {
   for (const ext of found) {
     try {
       new Function('host', `${ext.code}\n//# sourceURL=${encodeURI('slate-extension/' + ext.name)}`)(host);  // named in stack traces and the dev tools

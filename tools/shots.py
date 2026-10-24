@@ -73,6 +73,15 @@ PROJECT = HOME / 'serum'
 PROJECT.mkdir()
 DEMO = PROJECT / 'sialylation.py'
 DEMO.write_text(DEMO_TEXT, encoding = 'utf-8')
+TABLE = PROJECT / 'serum_glycomics.csv'  # made-up numbers for the table view's scene: healthy (H) and patient (P) samples
+TABLE.write_text('glycan,H1,H2,H3,H4,P1,P2,P3,P4\n' + ''.join(f'{g},{",".join(map(str, v))}\n' for g, v in [
+    ('Neu5Ac(a2-6)Gal(b1-4)GlcNAc(b1-2)Man(a1-3)[Man(a1-6)]Man(b1-4)GlcNAc(b1-4)GlcNAc', [41.2, 39.8, 43.1, 40.5, 30.2, 28.7, 33.4, 29.9]),
+    ('Gal(b1-4)GlcNAc(b1-2)Man(a1-3)[Man(a1-6)]Man(b1-4)GlcNAc(b1-4)[Fuc(a1-6)]GlcNAc', [18.5, 19.9, 17.2, 18.8, 24.1, 26.3, 22.8, 25.0]),
+    ('Man(a1-3)[Man(a1-6)]Man(b1-4)GlcNAc(b1-4)GlcNAc', [6.3, 5.9, 6.8, 6.1, 9.4, 8.8, 10.2, 9.1]),
+    ('Neu5Ac(a2-3)Gal(b1-4)[Fuc(a1-3)]GlcNAc(b1-6)[Gal(b1-3)]GalNAc', [4.1, 3.8, 4.5, 4.0, 7.9, 8.6, 7.2, 8.1]),
+    ('Neu5Ac(a2-3)Gal(b1-3)[Neu5Ac(a2-6)]GalNAc', [2.7, 2.9, 2.5, 2.8, 1.6, 1.4, 1.9, 1.5]),
+    ('Gal(b1-3)GalNAc', [1.9, 2.1, 1.7, 2.0, 3.3, 3.0, 3.6, 3.1]),
+    ('Fuc(a1-2)Gal(b1-3)GalNAc', [0.8, 0.9, 0.7, 0.8, 0.4, 0.5, 0.3, 0.4])]), encoding = 'utf-8')
 scale = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100  # the main monitor's, where the window opens
 x0, y0 = round(80 * scale), round(60 * scale)
 state.save({'roots': [str(PROJECT), str(GLYCOWORK)], 'tabs': [{'path': str(DEMO)}], 'active': str(DEMO), 'autosave': False, 'consoleOpen': False,
@@ -233,6 +242,21 @@ def run(window):
         js(window, "(document.querySelector('.sr-line').click(), 1)")
         time.sleep(1)
         shoot(window, 'motif-search', "(() => { const s = $('sidebar').getBoundingClientRect(); return {x: 0, y: 0, w: s.right + 820, h: 552}; })()")  # ends above line 27, the Markdown cell
+    # suggestions while typing a glycan: Neu5Ac's linkages, most common first
+    js(window, f"(activate(S.tabs.find((t) => t.path === {json.dumps(str(DEMO))})), $('sidebar').querySelector('#side-tabs button').click(), 1)")
+    js(window, "typingCounts().then(() => { const m = S.active.model, n = m.getLineCount(); m.pushEditOperations([], [{range: new monaco.Range(n, 1, n, 1), text: \"query = 'Neu5Ac()'\"}], () => null);"
+               " editor.setPosition({lineNumber: n, column: 17}); editor.revealLine(n); editor.focus();"
+               " editor.getContribution('editor.contrib.suggestController').triggerSuggest(new Set([typing.provider])); return 1; })")
+    if until(window, "document.querySelectorAll('.suggest-widget.visible .monaco-list-row').length >= 5 && 1", 'glycan suggestions', wait = 30):
+        shoot(window, 'typing', f"{REGION}(['.suggest-widget.visible', '#editor .cursor'], 16, '#editor')")
+    js(window, "(editor.trigger('shots', 'hideSuggestWidget', null), S.active.model.undo(), 1)")
+    # an abundance table as a table, with a row's glycan and its values per group
+    js(window, f"openFile({json.dumps(str(TABLE))}).then(() => (toggleTable(S.active, true), 1))")
+    if until(window, "document.querySelectorAll('#table-view .tv-cell .glycan').length >= 5 && 1", 'table drawings', wait = 30):
+        js(window, "($('table-view').querySelectorAll('.tv-head .tv-cell')[5].click(), $('table-view').querySelectorAll('.tv-head .tv-cell')[5].click(), $('table-view').querySelector('.tv-row').click(), 1)")
+        if until(window, "!!document.querySelector('#table-view .tv-drawing img') && !!document.querySelector('#table-view .tv-card p') && 1", 'table row panel', wait = 20):
+            shoot(window, 'table', f"{REGION}(['#tabs', '#table-view .tv-bars'], 14, '#main')")  # down to the row's bars
+    js(window, "(toggleTable(S.active, false), 1)")
     # the console, after running the script's cells
     js(window, f"(activate(S.tabs.find((t) => t.path === {json.dumps(str(DEMO))})), toggleConsole(true, false), $('console-clear').click(), editor.setPosition({{lineNumber: 3, column: 1}}), 1)")
     for _ in range(4):

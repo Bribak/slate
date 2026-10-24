@@ -6,6 +6,11 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- The session comes back faster at startup: the saved tabs are read while the window is still setting up (about 0.4 s sooner for eight tabs).
+- Diff views (such as the Changes extension's) no longer have Python parse both files three times each in the background.
+- The table view keeps the glycan column to about a third of the width, so the sample columns stay in view next to an open row.
+- A minimised slate no longer checks its open files for outside changes every 2 seconds; it checks once when it is shown again.
+
 ## 0.1.4 (2026-10-24)
 
 - Suggestions while you type a glycan in a string or a table cell: after `Gal(` the linkages Gal takes, after `Gal(b1-4)` the monosaccharides that follow it, and the monosaccharides that start a glycan or a branch, each with how often glycowork's glycans have it there, most common first.
