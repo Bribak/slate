@@ -123,6 +123,16 @@ def run(window):
     table.write_text('glycan,abundance\nNeu5Ac(a2-3)Gal(b1-4)GlcNAc,1\n"Fuc(a1-2)Gal",2\n', encoding = 'utf-8')
     js(window, f"openFile({json.dumps(str(table))}).then(() => 1)")
     check('glycan cells of a table in SNFG colours', until(window, colors.replace('|blue', '|blue|red'), wait = 10), expect = 5)
+    js(window, "(toggleTable(S.active, true), 1)")
+    check('table view rows', until(window, "$('table-view') && $('table-view').querySelector('.tv-count').textContent", wait = 10), expect = '2 of 2 rows')
+    sort = "(() => { const h = $('table-view').querySelectorAll('.tv-head .tv-cell')[1]; h.click(); h.click(); return $('table-view').querySelector('.tv-row .tv-cell').textContent; })()"
+    check('table view sorts a column', js(window, sort), expect = 'Fuc(a1-2)Gal')  # abundance, descending
+    js(window, "$('table-view').dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})) || 1")
+    check('table view closes', js(window, "!$('table-view') && $('st-table').textContent"), expect = '⊞ Table')
+    contexts = "['Neu5Ac(a2-3)Gal(b1-', 'Gal(b1-3)[Fuc(a1-4)]Gl', 'Gal(b1-3)[', 'self.f('].map((p) => { const c = glycanContext(p); return c && [c.kind, c.child || '', c.typed].join(' '); })"
+    check('glycan typing contexts', js(window, contexts), expect = ['link Gal b1-', 'parent Fuc Gl', 'leaf  ', None])
+    refs = "referencesIn('PMID: 37608048, doi:10.1016/S0092-8674(00)81683-9. G00031MO').map((r) => r.kind + ':' + r.id).join(' ')"
+    check('PMIDs and DOIs found', js(window, refs), expect = 'pmid:37608048 doi:10.1016/S0092-8674(00)81683-9')
     errors = js(window, "JSON.stringify(usage.events.filter((e) => /error/.test(e.kind)).map((e) => e.call || e.message))")
     check('no page or API errors', json.loads(errors or '["no answer"]'), expect = [])
 

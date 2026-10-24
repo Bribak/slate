@@ -170,6 +170,8 @@ async function init(saved) {
   registerGlycanFixes();
   setupRunning();
   setupGlycans(saved);
+  setupGlycanTyping();
+  setupReferences(saved);
   editor.onDidChangeCursorSelection(updateStatusPos);
   editor.onDidChangeModelContent(() => persist());
   S.roots = saved.roots || [];
@@ -327,6 +329,7 @@ function activate(tab, {mru = true} = {}) {
   renderTabs();
   renderBanner();
   updateStatus();
+  syncTable();
   markTreeActive();
   persist();
 }
@@ -373,7 +376,7 @@ function closeTab(tab, {force = false} = {}) {
     S.active = null;
     const next = S.tabs.find((t) => t.key === S.mru[0]) || S.tabs[Math.min(i, S.tabs.length - 1)];
     if (next) activate(next);
-    else { editor.setModel(null); $('empty').classList.remove('hidden'); renderBanner(); updateStatus(); }
+    else { editor.setModel(null); $('empty').classList.remove('hidden'); renderBanner(); updateStatus(); syncTable(); }
   }
   tab.model.dispose();
   syncDirty();
@@ -447,6 +450,7 @@ function tabMenu(tab) {
     ['Copy path', () => navigator.clipboard.writeText(tab.path)],
     ['Reveal in folder tree', () => { activate(tab); revealActiveInTree(); }],
     [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(tab.path)],
+    ...(isTableTab(tab) ? [[tab.tableView ? 'Show as text' : 'Show as table', () => toggleTable(tab)]] : []),
   ];
 }
 
@@ -876,7 +880,12 @@ const TABLE_TAB = /\.(csv|tsv|txt)$/i;
 const TABLE_LINE = 10_000;  // Monaco renders no more of a line (stopRenderingLineAfter); glycowork's binding table has a 201,567-character header of glycans
 const TABLE_GLYCANS = 150;  // distinct glycans a table shows at once, nearest the middle of the screen, so they never outnumber GLYCANS_KEPT
 const GLYCANS_KEPT = 300;  // drawings, most recently shown first; each is about 8 KB of data URL
-const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, colors: null, off: false, noProcess: false, count: 0, cards: new Map(), full: new Map()};
+// A GlyTouCan ID (G00031MO) anywhere on a line of a Python or table tab, drawn as the glycan glycowork gives it (Api.glytoucan,
+// which bisects an index file rather than holding glycowork's 190,000 IDs). No lookbehind, which Safari only has from 16.4.
+const GLYTOUCAN = /(^|[^A-Za-z0-9])(G\d{5}[A-Z]{2})(?![A-Za-z0-9])/g;
+const IDS_KEPT = 5000;
+const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, colors: null, off: false, noProcess: false, count: 0, cards: new Map(), full: new Map(),
+  ids: new Map(), idsWaiting: new Set()};
 
 // SNFG colours by monosaccharide, as glycowork's GlycoDraw colours them (motif/draw.py sugar_dict), lightened for Darcula's
 // dark background. A residue takes the colour of the longest name it starts with: GlcNAc6S is a GlcNAc, Neu5Ac9Ac a Neu5Ac.
@@ -918,11 +927,22 @@ function snfgRuns(line, from, text) {
   return runs.map(([s, e, cls]) => ({range: new monaco.Range(line, s, line, e), options: {description: 'snfg', inlineClassName: cls}}));
 }
 
+// {id, glycan, line, start, end} per GlyTouCan ID on a line; glycan is undefined until Api.glytoucan answered, null if unknown
+function idsIn(line, n, out) {
+  if (!/G\d{5}/.test(line)) return;
+  for (const m of line.matchAll(GLYTOUCAN)) {
+    const start = m.index + m[1].length + 1;
+    out.push({id: m[2], glycan: glycans.ids.get(m[2]), line: n, start, end: start + m[2].length});
+  }
+}
+
 function glycansIn(model, from, to) {
   const out = [];
   for (let n = from; n <= to; n++) {
     const line = model.getLineContent(n);
-    if (line.length > 3000 || !line.includes('-')) continue;
+    if (line.length > 3000) continue;
+    idsIn(line, n, out);
+    if (!line.includes('-')) continue;
     for (const m of line.matchAll(GLYCAN_STRING)) {
       if (LINKAGE.test(m[2]) && !NOT_TEXT.test(line.slice(Math.max(0, m.index - 2), m.index))) out.push({glycan: m[2], line: n, start: m.index + 1, from: m.index + 2, end: m.index + m[0].length + 1});
     }
@@ -936,6 +956,7 @@ function tableGlycansIn(model, from, to, middle = from) {
   const out = [];
   for (let n = from; n <= to; n++) {
     const line = model.getLineContent(n);
+    idsIn(line.slice(0, TABLE_LINE), n, out);
     if (!line.includes('-')) continue;
     for (const m of line.slice(0, TABLE_LINE).matchAll(TABLE_GLYCAN)) {
       const glycan = m[2] || m[4].replace(/\.+$/, '');  // a cell at the end of a sentence in a .txt
@@ -946,8 +967,9 @@ function tableGlycansIn(model, from, to, middle = from) {
     }
   }
   const shown = new Set();
-  for (const f of [...out].sort((a, b) => Math.abs(a.line - middle) - Math.abs(b.line - middle))) if (shown.size < TABLE_GLYCANS) shown.add(f.glycan);
-  return shown.size < TABLE_GLYCANS ? out : out.filter((f) => shown.has(f.glycan));
+  const key = (f) => f.id || f.glycan;
+  for (const f of [...out].sort((a, b) => Math.abs(a.line - middle) - Math.abs(b.line - middle))) if (shown.size < TABLE_GLYCANS) shown.add(key(f));
+  return shown.size < TABLE_GLYCANS ? out : out.filter((f) => shown.has(key(f)));
 }
 
 // The glycans of a Python tab's strings or a table tab's cells on lines from..to; null for any other tab
@@ -1004,13 +1026,20 @@ function showGlycans(found) {
 const refreshGlycans = debounce(async () => {
   const model = editor.getModel(), ranges = editor.getVisibleRanges();
   const first = ranges.length && ranges[0].startLineNumber, last = ranges.length && ranges[ranges.length - 1].endLineNumber;
-  const found = glycans.off || !model || !ranges.length ? null : glycansOn(model, Math.max(1, first - 30), Math.min(model.getLineCount(), last + 30), (first + last) / 2);
-  if (!found) { glycans.decorations.clear(); glycans.colors.clear(); return; }
-  glycans.colors.set(found.flatMap((f) => snfgRuns(f.line, f.from, f.glycan)));
+  const all = glycans.off || !model || !ranges.length ? null : glycansOn(model, Math.max(1, first - 30), Math.min(model.getLineCount(), last + 30), (first + last) / 2);
+  if (!all) { glycans.decorations.clear(); glycans.colors.clear(); return; }
+  glycans.colors.set(all.filter((f) => !f.id).flatMap((f) => snfgRuns(f.line, f.from, f.glycan)));
   if (glycans.noProcess) return;
+  resolveIds(all.filter((f) => f.id && f.glycan === undefined).map((f) => f.id));
+  const found = all.filter((f) => f.glycan);
   showGlycans(found);
-  const missing = [...new Set(found.map((f) => f.glycan))].filter((g) => !glycans.drawn.has(g) && !glycans.waiting.has(g));
-  if (!missing.length) return;
+  if (await drawGlycans(found.map((f) => f.glycan)) && editor.getModel() === model) refreshGlycans();
+}, 150);
+
+// Asks for the drawings of glycans not drawn yet; true when new ones came. Shared by the editor and the table view.
+async function drawGlycans(list) {
+  const missing = [...new Set(list)].filter((g) => !glycans.drawn.has(g) && !glycans.waiting.has(g));
+  if (!missing.length || glycans.noProcess) return false;
   missing.forEach((g) => glycans.waiting.add(g));
   let drawn;
   try { drawn = await api.glycans(missing, S.roots); } catch (e) { drawn = {error: errMsg(e)}; }
@@ -1019,7 +1048,7 @@ const refreshGlycans = debounce(async () => {
     glycans.noProcess = true;  // the colours stay: they need no glycowork
     glycans.decorations.clear();
     toast(`No glycan drawings this session: ${drawn.error}`);
-    return;
+    return false;
   }
   for (const [g, svgs] of Object.entries(drawn)) glycans.drawn.set(g, svgs && glycanDrawing(svgs));
   if (S.active && S.active.glycanPending) { S.active.glycanPending = false; checkGlycans(S.active); }
@@ -1028,8 +1057,21 @@ const refreshGlycans = debounce(async () => {
     glycans.drawn.delete(g);
     if (d) d.style.remove();
   }
-  if (editor.getModel() === model) refreshGlycans();
-}, 150);
+  return true;
+}
+
+// GlyTouCan IDs to glycans (Api.glytoucan), then the drawings again. The first ID ever builds glycowork's index (1-2 s, once).
+async function resolveIds(ids) {
+  const ask = [...new Set(ids)].filter((id) => !glycans.idsWaiting.has(id));
+  if (!ask.length) return;
+  ask.forEach((id) => glycans.idsWaiting.add(id));
+  let found = {};
+  try { found = await api.glytoucan(ask, S.roots); } catch (e) {}
+  for (const id of ask) { glycans.idsWaiting.delete(id); glycans.ids.set(id, found[id] || null); }
+  for (const id of glycans.ids.keys()) { if (glycans.ids.size <= IDS_KEPT) break; glycans.ids.delete(id); }
+  refreshGlycans();
+  if ($('table-view')) table.refresh();
+}
 
 function setupGlycans(saved) {
   glycans.off = saved.glycan_drawings === false;
@@ -1037,6 +1079,7 @@ function setupGlycans(saved) {
   glycans.colors = editor.createDecorationsCollection();
   editor.onDidChangeModel(refreshGlycans);
   editor.onDidChangeModelContent(refreshGlycans);
+  editor.onDidChangeModelContent(debounce(() => { if ($('table-view')) syncTable(); }, 300));  // the file changed on disk under an open table view
   editor.onDidScrollChange((e) => e.scrollTopChanged && refreshGlycans());
   editor.onDidLayoutChange(refreshGlycans);
   const hover = {
@@ -1049,11 +1092,13 @@ function setupGlycans(saved) {
       const [full, card] = await Promise.all([within(glycanFull(f.glycan), 1000, null), within(glycanCard(f.glycan), 400, '')]);
       const {url, size} = full || {url: d.style.textContent.match(/url\("([^"]+)"\)/)[1], size: d.size};
       // Monaco caps a hover at a quarter of the editor's height, at least 250 px: a taller drawing pushed the card out of sight
-      const room = Math.max(250, editor.getLayoutInfo().height / 4) - (card ? 110 : 16);
-      const scale = Math.min(full ? 1 : 2, 480 / size[0], room / size[1]);
+      const bars = TABLE_TAB.test(model.uri.path) ? rowBars(model, f.line) : '';  // a glycomics row's abundances
+      const room = Math.max(250, editor.getLayoutInfo().height / 4) - (card ? 110 : 16) - (bars ? 64 : 0) - (f.id ? 24 : 0);
+      const scale = Math.min(full ? 1 : 2, 480 / size[0], Math.max(40, room) / size[1]);
       return {range: new monaco.Range(f.line, f.start, f.line, f.end),
-        contents: [{value: `![SNFG drawing](${url}|width=${Math.round(size[0] * scale)},height=${Math.round(size[1] * scale)})`},
-          ...(card ? [{value: card, isTrusted: true}] : [])]};
+        contents: [...(f.id ? [{value: `**${f.id}** · \`${f.glycan}\``}] : []),
+          {value: `![SNFG drawing](${url}|width=${Math.round(size[0] * scale)},height=${Math.round(size[1] * scale)})`},
+          ...(card ? [{value: card, isTrusted: true}] : []), ...(bars ? [{value: bars}] : [])]};
     },
   };
   monaco.languages.registerHoverProvider('py', hover);
@@ -1112,6 +1157,472 @@ function registerGlycanFixes() {
       return {actions, dispose() {}};
     },
   });
+}
+
+// ---------------------------------------------------------------- glycan typing
+
+// Suggestions while a glycan is typed in a string or a table cell: after 'Gal(' the linkages Gal takes, after 'Gal(b1-4)'
+// the residues Gal(b1-4) goes to, and at the start of a glycan or after ')[' the residues that start a chain, each ranked by
+// how often glycowork's glycans have it there (Api.glycan_typing, slate/linkages.py). The counts are asked for once, on the
+// first '(' typed after a residue-like word in a string; everything else happens in the page, so a suggestion never waits
+// for Python. Picking a linkage brings up the residues for it at once. The first three letters of a glycan at the start of
+// a string bring up the residues that start one, when one does start with them.
+const typing = {counts: undefined, asked: null, provider: null};
+const GLYCAN_PREFIX = /^[A-Za-z0-9?\-()[\]{},.|/]*$/;
+const TYPED_LINK = /^[abo?][\d?]?-[\d?][\d?|/,]*$/;
+const RESIDUE_LIKE = (name) => /^[0-9]*[a-z]{0,2}[A-Z]/.test(name.replace(/^[DL]-/, ''));  // Gal, Neu5Ac, 6dTal, dHex; not foo or self.f
+
+function typingCounts() {
+  if (!typing.asked) typing.asked = api.glycan_typing(S.roots).catch(() => null).then((c) => (typing.counts = c));
+  return typing.asked;
+}
+
+// The text of the string (or table cell) before the cursor, when the cursor is in one on this line; null otherwise. Bytes
+// and docstring lines without their quotes are left alone.
+function typedGlycan(model, position) {
+  const line = model.getLineContent(position.lineNumber), upto = position.column - 1;
+  if (TABLE_TAB.test(model.uri.path)) return line.slice(0, upto).match(/[^,\t;"']*$/)[0];
+  if (model.getLanguageId() !== 'py') return null;
+  let i = 0, start = -1, quote = '';
+  while (i < upto) {
+    const c = line[i];
+    if (quote) {
+      if (c === '\\') { i += 2; continue; }
+      if (line.startsWith(quote, i)) { i += quote.length; quote = ''; continue; }
+      i++;
+    } else if (c === '#') {
+      return null;
+    } else if (c === '"' || c === "'") {
+      quote = line.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+      i += quote.length;
+      start = /[bB]$/.test(line.slice(Math.max(0, i - quote.length - 2), i - quote.length)) ? -1 : i;  // b'' or rb'': bytes
+    } else {
+      i++;
+    }
+  }
+  return quote && start >= 0 && i === upto ? line.slice(start, upto) : null;
+}
+
+// What comes next in a glycan typed so far: {kind: 'link', child, typed}, {kind: 'parent', child, link, typed} or
+// {kind: 'leaf', start, typed}, where typed is what is already typed of it; null for anything that is no glycan
+function glycanContext(prefix) {
+  if (prefix === null || !GLYCAN_PREFIX.test(prefix)) return null;
+  let m = prefix.match(/([^()[\]]+)\(([^()]*)$/);
+  if (m) return RESIDUE_LIKE(m[1]) ? {kind: 'link', child: m[1], typed: m[2]} : null;
+  m = prefix.match(/([^()[\]]+)\(([^()]*)\)\]?([^()[\]]*)$/);  // after ']' the branch's residue and the chain before it share the next one
+  if (m) return TYPED_LINK.test(m[2]) ? {kind: 'parent', child: m[1], link: m[2], typed: m[3]} : null;
+  m = prefix.match(/(^|\)\[)([^()[\]]*)$/);
+  return m ? {kind: 'leaf', start: !m[1], typed: m[2]} : null;
+}
+
+const baseResidue = (name) => (SNFG_NAMES.find(([n]) => name.replace(/^[DL]-/, '').startsWith(n)) || [name])[0];  // GlcNAc6S counts as GlcNAc when it has no counts of its own
+
+// [[name, share]] for a context, most frequent first
+function glycanChoices(counts, ctx) {
+  let found;
+  if (ctx.kind === 'link') found = counts.links[ctx.child] || counts.links[baseResidue(ctx.child)] || counts.links['*'];
+  else if (ctx.kind === 'parent') found = counts.parents[`${ctx.child}|${ctx.link}`] || counts.parents[`${baseResidue(ctx.child)}|${ctx.link}`] || counts.parents[`*|${ctx.link}`];
+  else found = counts.leaves;
+  const entries = Object.entries(found || {}), total = entries.reduce((a, [, n]) => a + n, 0);
+  return entries.map(([name, n]) => [name, n / total]);
+}
+
+function setupGlycanTyping() {
+  const share = (p) => (p >= 0.01 ? `${Math.round(p * 100)}%` : '<1%');
+  typing.provider = {
+    triggerCharacters: ['(', ')', '[', ']', '-'],
+    async provideCompletionItems(model, position, context) {
+      const ctx = !glycans.off && glycanContext(typedGlycan(model, position));
+      // a '-' or ')' in some other string: no glycan has begun there
+      if (!ctx || (ctx.kind === 'leaf' && ctx.start && context.triggerKind === monaco.languages.CompletionTriggerKind.TriggerCharacter)) return null;
+      const counts = typing.counts === undefined ? await typingCounts() : typing.counts;
+      if (!counts) return null;
+      const n = position.lineNumber, col = position.column, line = model.getLineContent(n);
+      const start = col - ctx.typed.length;
+      // a linkage replaces the ')' that Monaco closed the '(' with
+      const end = ctx.kind === 'link' && line[col - 1] === ')' ? col + 1 : col;
+      const range = new monaco.Range(n, start, n, end);
+      const where = ctx.kind === 'link' ? `of ${ctx.child}'s linkages` : ctx.kind === 'parent' ? `after ${ctx.child}(${ctx.link})` : 'of chain starts';
+      // Filtered here by what is typed, and every item scores the same in Monaco's own filter (filterText starts with it),
+      // so the most frequent comes first: Monaco's fuzzy score put the rare exact 'Neu' above Neu5Ac
+      const suggestions = glycanChoices(counts, ctx).filter(([name]) => name.startsWith(ctx.typed)).map(([name, p], i) => ({
+        label: {label: name, description: `${share(p)} ${where}`}, filterText: ctx.typed + name, sortText: String(i).padStart(4, '0'), range,
+        kind: ctx.kind === 'link' ? monaco.languages.CompletionItemKind.Operator : monaco.languages.CompletionItemKind.Struct,
+        insertText: ctx.kind === 'link' ? `${name})` : name,
+        ...(ctx.kind === 'link' ? {command: {id: 'slate.glycanSuggest', title: 'Suggest the next residue'}} : {}),
+      }));
+      return {suggestions, incomplete: true};  // asked again for each letter typed: microseconds, from the counts in the page
+    },
+  };
+  monaco.languages.registerCompletionItemProvider('py', typing.provider);
+  monaco.languages.registerCompletionItemProvider('plaintext', typing.provider);  // table cells (typedGlycan)
+  const suggest = (auto) => {
+    const ctrl = editor.getContribution('editor.contrib.suggestController');
+    if (ctrl && ctrl.triggerSuggest) ctrl.triggerSuggest(new Set([typing.provider]), auto);  // these suggestions only, not every word of every file
+    else editor.trigger('glycan', 'editor.action.triggerSuggest', {});
+  };
+  monaco.editor.registerCommand('slate.glycanSuggest', () => suggest(false));
+  editor.onDidChangeModelContent((e) => {
+    // A glycan's first three letters at the start of a string: Monaco suggests nothing in strings on its own
+    if (glycans.off || typing.counts === null || e.changes.length !== 1 || e.changes[0].text.length !== 1 || !/[A-Za-z0-9]/.test(e.changes[0].text)) return;
+    const model = editor.getModel(), position = editor.getPosition();
+    const ctx = model && position && glycanContext(typedGlycan(model, position));
+    if (!ctx || ctx.kind !== 'leaf' || !ctx.start || ctx.typed.length !== 3 || !SNFG_NAMES.some(([n]) => n.startsWith(ctx.typed))) return;  // 'Neu', 'Gal', 'Glc', 'Fuc'
+    typingCounts().then((counts) => {
+      if (counts && editor.getModel() === model && editor.getPosition().equals(position) && Object.keys(counts.leaves).some((r) => r.startsWith(ctx.typed))) suggest(true);
+    });
+  });
+}
+
+// ---------------------------------------------------------------- glycomics tables
+
+// A .csv, .tsv or .txt tab as a table (⊞ Table in the status bar, or the tab's menu): aligned columns under a pinned header,
+// glycans drawn in their column, a click on a header sorts by it, a click on a row shows its glycan with its values as bars,
+// and a double-click goes to its line in the text. It is built from the tab's text when opened and removed when closed, so
+// nothing of it runs otherwise; only the rows and columns in view are in the page, so glycowork's 20,615-row lectin table
+// scrolls like a small one.
+const TABLE_ROW = 24;  // a sticker is 20 px
+const TABLE_COLUMNS = 300;
+const NUMBER = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
+const EMPTY = /^(|na|nan|n\/a|none|null)$/i;
+const GROUP_COLORS = ['#4A88C7', '#CC7832', '#6A8759', '#9876AA', '#BBB529', '#C75450', '#2AACB8', '#C77BB0'];
+const table = {tab: null, version: null, refresh: () => {}};
+const collator = new Intl.Collator(undefined, {numeric: true});
+
+function delimiterOf(path, firstLine) {
+  if (/\.tsv$/i.test(path) || firstLine.includes('\t')) return '\t';
+  return firstLine.split(';').length > firstLine.split(',').length ? ';' : ',';
+}
+
+// Rows of cells and the line each row starts on. Lines without quotes are split as they are; a quoted cell may hold the
+// delimiter, doubled quotes and line breaks.
+function parseTable(text, delim) {
+  const rows = [], lines = [], src = text.replace(/^﻿/, '').split(/\r?\n/);
+  for (let n = 0; n < src.length; n++) {
+    const line = src[n];
+    if (!line.includes('"')) { if (line || n < src.length - 1) { rows.push(line.split(delim)); lines.push(n + 1); } continue; }
+    const row = [], start = n + 1;
+    let cell = '', quoted = false, s = line;
+    for (let i = 0; ; i++) {
+      if (i === s.length) {
+        if (quoted && n + 1 < src.length) { s = src[++n]; i = -1; cell += '\n'; continue; }
+        break;
+      }
+      const c = s[i];
+      if (quoted) {
+        if (c !== '"') cell += c;
+        else if (s[i + 1] === '"') { cell += '"'; i++; } else quoted = false;
+      } else if (c === '"' && cell === '') quoted = true;
+      else if (c === delim) { row.push(cell); cell = ''; } else cell += c;
+    }
+    row.push(cell);
+    rows.push(row);
+    lines.push(start);
+  }
+  return {rows, lines};
+}
+
+const isNumber = (c) => NUMBER.test(c.trim());
+const groupOf = (name) => name.replace(/[\s_.\-]*\d+$/, '') || name;  // CD1..CD17 and HFD1..HFD16: two groups
+function groupColors(names) {
+  const colors = new Map();
+  for (const n of names) if (!colors.has(groupOf(n))) colors.set(groupOf(n), GROUP_COLORS[colors.size % GROUP_COLORS.length]);
+  return colors;
+}
+
+// A row's numbers as small bars coloured by sample group, for the hover of a glycan in a glycomics table (one glycan per
+// row, samples as columns). Two lines of the model are parsed per hover; '' for any other kind of row.
+function rowBars(model, n) {
+  if (n < 2 || model.getLineContent(n).length > TABLE_LINE) return '';
+  const delim = delimiterOf(model.uri.path, model.getLineContent(1));
+  const [header] = parseTable(model.getLineContent(1), delim).rows, [row] = parseTable(model.getLineContent(n), delim).rows;
+  if (!header || !row || header.length !== row.length) return '';
+  const values = row.map((c, i) => [header[i], c]).filter(([, c]) => isNumber(c)).map(([h, c]) => [h, +c]);
+  if (values.length < 3) return '';
+  const colors = groupColors(values.map(([h]) => h)), max = Math.max(...values.map(([, v]) => Math.abs(v))) || 1;
+  const bar = Math.max(2, Math.min(8, Math.floor(420 / values.length))), w = bar * values.length, h = 36;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h + 14}" viewBox="0 0 ${w} ${h + 14}"><rect width="${w}" height="${h + 14}" fill="#2B2B2B"/>`;
+  values.forEach(([name, v], i) => {
+    const bh = Math.max(v ? 1 : 0, Math.round(Math.abs(v) / max * h));
+    svg += `<rect x="${i * bar}" y="${h - bh}" width="${Math.max(1, bar - 1)}" height="${bh}" fill="${colors.get(groupOf(name))}"/>`;
+  });
+  let x = -1;
+  values.forEach(([name], i) => {  // each group's name under its first bar, where it fits
+    if (i && groupOf(values[i - 1][0]) === groupOf(name)) return;
+    if (i * bar > x) svg += `<text x="${i * bar}" y="${h + 11}" font-family="Segoe UI, sans-serif" font-size="10" fill="${colors.get(groupOf(name))}">${escapeHtml(groupOf(name))}</text>`;
+    x = i * bar + groupOf(name).length * 6 + 4;
+  });
+  const top = values.reduce((a, b) => (Math.abs(b[1]) > Math.abs(a[1]) ? b : a));
+  return `![values](${svgUrl(svg + '</svg>')}|width=${w},height=${h + 14})  \n${values.length} values · highest ${escapeMd(top[1])} in ${escapeMd(top[0])}`;
+}
+
+const isTableTab = (tab) => !!tab && TABLE_TAB.test(tab.path);
+
+function toggleTable(tab = S.active, on = !(tab && tab.tableView)) {
+  if (!isTableTab(tab)) return;
+  tab.tableView = on;
+  if (tab !== S.active) activate(tab);
+  else syncTable();
+}
+
+// Shows the front tab's table view when it has one open, and removes any other
+function syncTable() {
+  const tab = S.active, box = $('table-view');
+  if (!tab || !tab.tableView || tab.model.isDisposed()) {
+    if (box) { box.remove(); table.tab = null; }
+    updateTableStatus();
+    return;
+  }
+  if (!box || table.tab !== tab || table.version !== tab.model.getVersionId()) showTable(tab);
+  updateTableStatus();
+}
+
+function updateTableStatus() {
+  const s = $('st-table');
+  s.classList.toggle('hidden', !isTableTab(S.active));
+  s.textContent = S.active && S.active.tableView ? '≡ Text' : '⊞ Table';
+  s.title = S.active && S.active.tableView ? 'Back to the text' : 'Show as a table: aligned columns, sorting, glycans drawn, a row\'s values as bars';
+}
+
+function showTable(tab) {
+  if ($('table-view')) $('table-view').remove();
+  const text = tab.model.getValue(), delim = delimiterOf(tab.path, tab.model.getLineContent(1));
+  const parsed = parseTable(text, delim), header = parsed.rows[0] || [], body = parsed.rows.slice(1), lines = parsed.lines.slice(1);
+  const ncol = Math.min(TABLE_COLUMNS, Math.max(header.length, ...body.slice(0, 200).map((r) => r.length)));
+  const sample = body.slice(0, 300);
+  const filled = (c) => sample.map((r) => r[c] || '').filter((v) => !EMPTY.test(v.trim()));
+  const numeric = Array.from({length: ncol}, (_, c) => { const f = filled(c); return f.length > 0 && f.filter(isNumber).length >= 0.9 * f.length; });
+  const glycanCol = Array.from({length: ncol}, (_, c) => c).find((c) => { const f = filled(c); return f.length && f.filter((v) => LINKAGE.test(v) || /^G\d{5}[A-Z]{2}$/.test(v.trim())).length >= 0.5 * f.length; });
+  const charW = (() => { const ctx = document.createElement('canvas').getContext('2d'); ctx.font = `12px ${FONT}`; return ctx.measureText('0000000000').width / 10; })();
+  const widths = Array.from({length: ncol}, (_, c) => {
+    const chars = Math.max((header[c] || '').length + 2, ...sample.map((r) => (r[c] || '').length));
+    return c === glycanCol ? Math.min(560, Math.round(Math.min(chars, 60) * charW) + 150) : Math.round(Math.min(Math.max(chars, 4), 40) * charW) + 18;
+  });
+  const lefts = widths.reduce((acc, w, i) => (acc.push(acc[i] + w), acc), [0]), total = lefts[ncol];
+  const glycanOf = (cell) => { const v = (cell || '').trim(); return /^G\d{5}[A-Z]{2}$/.test(v) ? glycans.ids.get(v) : LINKAGE.test(v) ? v : null; };
+
+  const box = el('div'), head = el('div', 'tv-bar'), scroll = el('div', 'tv-scroll'), cols = el('div', 'tv-head'), rows = el('div', 'tv-rows'), side = el('div', 'tv-side hidden');
+  box.id = 'table-view';
+  const filter = el('input');
+  filter.placeholder = 'Filter rows';
+  filter.spellcheck = false;
+  const count = el('span', 'tv-count');
+  const back = el('button', null, '≡ Text');
+  back.title = 'Back to the text (Escape)';
+  back.onclick = () => toggleTable(tab, false);
+  head.append(filter, count, el('span', 'spacer'), back);
+  cols.style.width = rows.style.width = total + 'px';
+  scroll.append(cols, rows);
+  const main = el('div', 'tv-main');
+  main.append(scroll, side);
+  box.append(head, main);
+  $('editor-wrap').append(box);
+  Object.assign(table, {tab, version: tab.model.getVersionId()});
+
+  let order = body.map((_, i) => i), shown = order, sortCol = -1, sortDir = 0, selected = -1;
+  for (let c = 0; c < ncol; c++) {
+    const h = el('div', 'tv-cell' + (numeric[c] ? ' num' : ''), header[c] || '');
+    h.style.left = lefts[c] + 'px';
+    h.style.width = widths[c] + 'px';
+    h.title = `${header[c] || ''}: click to sort`;
+    h.onclick = () => {
+      sortDir = sortCol === c ? (sortDir === 1 ? -1 : sortDir === -1 ? 0 : 1) : 1;
+      sortCol = c;
+      [...cols.children].forEach((e, i) => e.classList.toggle('sorted', i === c && sortDir !== 0));
+      h.dataset.dir = sortDir === 1 ? '▲' : '▼';
+      const key = numeric[c] ? (r) => (isNumber(body[r][c] || '') ? +body[r][c] : NaN) : (r) => body[r][c] || '';
+      order = body.map((_, i) => i);
+      if (sortDir) {
+        const k = order.map(key);
+        order.sort(numeric[c] ? (a, b) => (isNaN(k[a]) ? 1 : isNaN(k[b]) ? -1 : (k[a] - k[b]) * sortDir)  // empty cells last either way
+          : (a, b) => collator.compare(k[a], k[b]) * sortDir);  // localeCompare with options made a collator per call: 500 ms for 20,967 rows
+      }
+      applyFilter();
+    };
+    cols.append(h);
+  }
+  if (header.length > ncol) count.title = `The first ${ncol} of ${header.length} columns`;
+
+  const applyFilter = () => {
+    const q = filter.value.trim().toLowerCase();
+    shown = q ? order.filter((r) => body[r].some((c) => c.toLowerCase().includes(q))) : order;
+    count.textContent = `${shown.length.toLocaleString()} of ${body.length.toLocaleString()} rows` + (header.length > ncol ? ` · ${ncol} of ${header.length} columns` : '');
+    rows.style.height = shown.length * TABLE_ROW + 'px';
+    render(true);
+  };
+  filter.oninput = debounce(applyFilter, 150);
+
+  let painted = '';
+  const render = (force = false) => {
+    const top = scroll.scrollTop - TABLE_ROW, view = scroll.clientHeight + TABLE_ROW, left = scroll.scrollLeft, right = left + scroll.clientWidth;
+    const first = Math.max(0, Math.floor(top / TABLE_ROW) - 5), last = Math.min(shown.length, Math.ceil((top + view) / TABLE_ROW) + 5);
+    let c0 = 0;
+    while (c0 < ncol - 1 && lefts[c0 + 1] < left) c0++;
+    let c1 = c0;
+    while (c1 < ncol && lefts[c1] < right) c1++;
+    const key = `${first}:${last}:${c0}:${c1}:${selected}`;
+    if (!force && key === painted) return;
+    painted = key;
+    const html = [], want = [], ids = [];
+    for (let i = first; i < last; i++) {
+      const r = shown[i], cells = body[r];
+      html.push(`<div class="tv-row${r === selected ? ' sel' : ''}" data-r="${r}" style="top:${i * TABLE_ROW}px">`);
+      for (let c = c0; c < c1; c++) {
+        const v = cells[c] || '';
+        let inner = escapeHtml(v);
+        if (c === glycanCol) {
+          const g = glycanOf(v), d = g && glycans.drawn.get(g);
+          if (g) want.push(g); else if (/^G\d{5}[A-Z]{2}$/.test(v.trim()) && !glycans.ids.has(v.trim())) ids.push(v.trim());
+          if (d) inner = `<span class="glycan ${d.cls}"></span>${inner}`;
+        }
+        html.push(`<div class="tv-cell${numeric[c] ? ' num' : ''}${c === glycanCol ? ' gly' : ''}" style="left:${lefts[c]}px;width:${widths[c]}px" title="${escapeHtml(v)}">${inner}</div>`);
+      }
+      html.push('</div>');
+    }
+    rows.innerHTML = html.join('');
+    if (ids.length) resolveIds(ids);
+    if (want.length && !glycans.off) drawGlycans(want).then((fresh) => fresh && render(true));
+  };
+  let frame = 0;
+  scroll.addEventListener('scroll', () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); }); });
+  new ResizeObserver(() => render()).observe(scroll);
+
+  const showRow = async (r) => {
+    selected = r;
+    render(true);
+    side.classList.remove('hidden');
+    side.innerHTML = '';
+    const cells = body[r], g = glycanCol !== undefined ? glycanOf(cells[glycanCol]) : null;
+    const title = el('div', 'tv-title', glycanCol !== undefined ? cells[glycanCol] || '' : cells[0] || '');
+    const close = el('button', 'tv-close', '✕');
+    close.onclick = () => { side.classList.add('hidden'); selected = -1; render(true); };
+    side.append(close, title);
+    if (g && g !== (cells[glycanCol] || '').trim()) side.append(el('div', 'tv-sub', g));
+    const picture = el('div', 'tv-drawing'), card = el('div', 'tv-card');
+    if (g && !glycans.off && !glycans.noProcess) side.append(picture, card);
+    const values = [];
+    for (let c = 0; c < ncol; c++) if (numeric[c] && isNumber(cells[c] || '')) values.push([header[c] || `column ${c + 1}`, +cells[c]]);
+    if (values.length) {
+      const colors = groupColors(values.map(([n]) => n)), max = Math.max(...values.map(([, v]) => Math.abs(v))) || 1;
+      if (colors.size > 1 && colors.size < values.length) {  // each group's mean, when the columns form groups
+        const means = el('div', 'tv-means');
+        for (const [name, color] of colors) {
+          const vs = values.filter(([n]) => groupOf(n) === name).map(([, v]) => v);
+          const m = el('span', null, `${name}: ${(vs.reduce((a, b) => a + b, 0) / vs.length).toPrecision(3)} (${vs.length})`);
+          m.style.color = color;
+          means.append(m);
+        }
+        side.append(el('div', 'tv-label', 'Mean per group'), means);
+      }
+      const bars = el('div', 'tv-bars');
+      for (const [name, v] of values) {
+        const label = el('span', 'tv-bar-label', name), track = el('span', 'tv-track'), fill = el('span', 'tv-fill'), value = el('span', 'tv-bar-value', String(v));
+        label.title = name;
+        fill.style.width = (Math.abs(v) / max * 100).toFixed(1) + '%';
+        fill.style.background = colors.get(groupOf(name));
+        track.append(fill);
+        bars.append(label, track, value);
+      }
+      side.append(el('div', 'tv-label', `${values.length} values`), bars);
+    }
+    if (!g || glycans.off || glycans.noProcess) return;
+    const [full, info] = await Promise.all([glycanFull(g), glycanCard(g)]);
+    if (selected !== r) return;
+    if (full) { const img = el('img'); img.src = full.url; img.style.width = Math.min(full.size[0], 320) + 'px'; picture.append(img); }
+    if (info) card.innerHTML = info.split('  \n').map((line) => markdownHtml(line.replace(/\\(.)/g, '$1'))).join('');  // the hover card's lines; links stay text
+  };
+  rows.addEventListener('click', (e) => { const row = e.target.closest('.tv-row'); if (row) showRow(+row.dataset.r); });
+  rows.addEventListener('dblclick', (e) => {
+    const row = e.target.closest('.tv-row');
+    if (!row) return;
+    toggleTable(tab, false);
+    revealAt(lines[+row.dataset.r], 1);
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (!side.classList.contains('hidden')) close(); else toggleTable(tab, false); }
+  });
+  const close = () => { side.classList.add('hidden'); selected = -1; render(true); };
+  table.refresh = () => render(true);
+  applyFilter();
+  filter.focus();
+}
+
+// ---------------------------------------------------------------- references
+
+// A PMID (PMID: 37608048, _PMID37608048 in a file name, a PubMed URL) or a DOI shows its paper on hover: title, authors,
+// journal and year (Api.reference, from PubMed or doi.org), in any tab, and on file names in the folder tree and the tabs.
+// Only the identifier is sent, and only when it is hovered. Off with "reference_lookup": false.
+const PMID_TEXT = /(^|[^A-Za-z])PMID[\s:#_=-]{0,3}(\d{4,9})(?!\d)|pubmed(?:\.ncbi\.nlm\.nih\.gov\/|\/)(\d{4,9})(?!\d)/gi;
+const DOI_TEXT = /\b10\.\d{4,9}\/[^\s"'<>]+/g;
+const REFS_KEPT = 500;
+const refs = {off: false, known: new Map()};
+
+// [{kind, id, start, end}] with 0-based character offsets. A DOI loses trailing punctuation and a closing bracket it did not
+// open (a DOI in parentheses), but keeps its own: 10.1016/S0092-8674(00)81683-9.
+function referencesIn(text) {
+  const out = [];
+  for (const m of text.matchAll(PMID_TEXT)) out.push({kind: 'pmid', id: m[2] || m[3], start: m.index + (m[1] || '').length, end: m.index + m[0].length});
+  const extra = (s, open, close) => s.split(close).length > s.split(open).length;
+  for (const m of text.matchAll(DOI_TEXT)) {
+    let doi = m[0];
+    while (/[.,;:]$/.test(doi) || (doi.endsWith(')') && extra(doi, '(', ')')) || (doi.endsWith(']') && extra(doi, '[', ']'))) doi = doi.slice(0, -1);
+    out.push({kind: 'doi', id: doi, start: m.index, end: m.index + doi.length});
+  }
+  return out;
+}
+
+// The record for a reference, asked once per session; when PubMed or doi.org could not be reached it is asked again next time
+function lookupReference(ref) {
+  const key = `${ref.kind}:${ref.id.toLowerCase()}`;
+  if (!refs.known.has(key)) {
+    const asked = api.reference(ref.kind, ref.id).catch(() => null);
+    refs.known.set(key, asked);
+    asked.then((rec) => { if (!rec) refs.known.delete(key); });
+    for (const k of refs.known.keys()) { if (refs.known.size <= REFS_KEPT) break; refs.known.delete(k); }
+  }
+  return refs.known.get(key);
+}
+
+const authorsOf = (rec) => (rec.authors.length > 3 ? `${rec.authors.slice(0, 3).join(', ')} et al.` : rec.authors.join(', '));
+
+function referenceMd(ref, rec) {
+  const name = ref.kind === 'pmid' ? `PMID ${ref.id}` : `doi:${ref.id}`;
+  if (!rec) return `${escapeMd(name)}: ${ref.kind === 'pmid' ? 'PubMed' : 'doi.org'} could not be reached`;
+  if (rec.missing) return `${escapeMd(name)}: ${ref.kind === 'pmid' ? 'PubMed has no such record' : 'doi.org knows no such DOI'}`;
+  const link = (label, url) => `[${label}](command:slate.openReference?${encodeURIComponent(JSON.stringify([url]))} "Open ${url}")`;
+  const links = [rec.pmid && link('PubMed', `https://pubmed.ncbi.nlm.nih.gov/${rec.pmid}/`), rec.doi && link('doi.org', `https://doi.org/${rec.doi}`)].filter(Boolean);
+  return [`**${escapeMd(rec.title)}**`, escapeMd(authorsOf(rec)), [rec.journal && `*${escapeMd(rec.journal)}*`, rec.year].filter(Boolean).join(' · '), links.join(' · ')]
+    .filter(Boolean).join('  \n');
+}
+
+function setupReferences(saved) {
+  refs.off = saved.reference_lookup === false;
+  monaco.languages.registerHoverProvider('*', {
+    async provideHover(model, position) {
+      const line = model.getLineContent(position.lineNumber).slice(0, TABLE_LINE), at = position.column - 1;
+      if (refs.off || !/PMID|pubmed|10\.\d/i.test(line)) return null;
+      const ref = referencesIn(line).find((r) => at >= r.start && at <= r.end);
+      if (!ref) return null;
+      const rec = await lookupReference(ref);
+      return {range: new monaco.Range(position.lineNumber, ref.start + 1, position.lineNumber, ref.end + 1), contents: [{value: referenceMd(ref, rec), isTrusted: true}]};
+    },
+  });
+  monaco.editor.registerCommand('slate.openReference', (accessor, url) => api.open_url(url));
+  // A file name with a PMID gets its paper in its tooltip, looked up when the mouse first comes over it. DOIs hold a
+  // slash, which no file name can.
+  const titles = (e) => {
+    const target = e.target instanceof Element && e.target.closest('.node, .tab');
+    const name = target && (target.querySelector('.label, .name') || {}).textContent;
+    const ref = !refs.off && name && !target.dataset.ref && referencesIn(name).find((r) => r.kind === 'pmid');
+    if (!ref) return;
+    target.dataset.ref = '1';
+    lookupReference(ref).then((rec) => {
+      if (rec && !rec.missing) target.title = `${target.title || name}\n\n${rec.title}\n${authorsOf(rec)}\n${[rec.journal, rec.year].filter(Boolean).join(', ')}`;
+      else if (!rec) delete target.dataset.ref;
+    });
+  };
+  $('tree').addEventListener('mouseover', titles);
+  $('tab-strip').addEventListener('mouseover', titles);
 }
 
 // ---------------------------------------------------------------- folder tree
@@ -2002,6 +2513,8 @@ async function openSettings() {
   check('GPU rendering', v.gpu !== false, (on) => set('gpu', on ? null : false), 'off saves about 100 MB, but typing is slower on high-DPI screens; from the next start');
   check('Usage log', v.usage_log !== false, (on) => set('usage_log', on ? null : false), 'local only, never sent: python -m slate.usage');
   check('Check GitHub for a new version once a day', v.update_check !== false, (on) => set('update_check', on ? null : false));
+  check('Show the paper behind a PMID or DOI on hover', !refs.off, (on) => { refs.off = !on; set('reference_lookup', on ? null : false); },
+    'asks PubMed or doi.org, sending only the identifier');
   body.append(el('div', 'settings-note', `slate ${info.version} · Python ${S.python} · settings are kept in ${info.state_file}`));
 
   document.body.append(box);
@@ -2302,6 +2815,7 @@ function bindUi() {
       if (e.key === 'Enter') { e.preventDefault(); pickFinder(finderSel); return; }
     }
     const combo = comboOf(e), fn = keys[combo];
+    if (combo === 'ctrl+f' && $('table-view')) { e.preventDefault(); e.stopPropagation(); $('table-view').querySelector('input').select(); return; }  // the table's filter
     if (find[combo] && S.active && !(e.target instanceof Element && e.target.closest('#editor, #diff, #settings, #notes'))) {
       e.preventDefault(); e.stopPropagation();
       editor.focus();
@@ -2339,6 +2853,7 @@ function bindUi() {
     $('search-' + opt).onclick = (e) => { search[opt] = !search[opt]; e.target.classList.toggle('on', search[opt]); glycanMode(); runSearch(); };
   }
   $('st-settings').onclick = openSettings;
+  $('st-table').onclick = () => toggleTable();
   $('st-lint').onclick = () => { if (S.active) { editor.focus(); editor.trigger('status', 'editor.action.marker.nextInFiles'); } };
   dragSash($('side-sash'), (e) => { S.sidebarWidth = Math.max(140, Math.min(e.clientX, innerWidth - 300)); layout(); });
   dragSash($('console-sash'), (e) => { S.consoleHeight = Math.max(80, Math.min(innerHeight - e.clientY - 22, innerHeight - 150)); layout(); });

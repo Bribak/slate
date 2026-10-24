@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from slate import __version__, fonts, glycans, hints, instance, libraries, navigate, pythons, repl, state, style, system, update, usage, workspace
+from slate import __version__, fonts, glycans, glytoucan, hints, instance, libraries, linkages, navigate, pythons, references, repl, state, style, system, update, usage, workspace
 from slate.system import MAC, native
 
 WEB = Path(__file__).with_name('web')
@@ -16,7 +16,7 @@ WEB = Path(__file__).with_name('web')
 # 4 bits per channel (#2B2B2B drawn as #333333), which --disable-rgba-4444-textures undoes; the GPU memory cap saves ~40 MB more.
 LEAN = '--enable-low-end-device-mode --disable-rgba-4444-textures --force-gpu-mem-available-mb=64'
 SOFTWARE = '--disable-gpu --disable-gpu-compositing'
-SETTINGS = ('console_python', 'console_pythons', 'style_script', 'gpu', 'usage_log', 'glycan_drawings', 'update_check')  # set_setting's keys
+SETTINGS = ('console_python', 'console_pythons', 'style_script', 'gpu', 'usage_log', 'glycan_drawings', 'update_check', 'reference_lookup')  # set_setting's keys
 project_key = lambda root: root.replace('/', '\\').rstrip('\\').lower()  # app.js keyOf, which keys console_pythons
 MIME_TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.ico': 'image/x-icon', '.png': 'image/png'}
 
@@ -248,6 +248,24 @@ class Api:
 
     def glycan_motifs(self, roots = ()):
         return self._drawer.request({'op': 'motifs'}, self._state.get('console_python'), list(roots)).get('motifs', [])
+
+    def glytoucan(self, ids, roots = ()):
+        """{id: IUPAC-condensed glycan or None} for GlyTouCan IDs, from the glycowork the drawings come from (slate/glytoucan.py)."""
+        return glytoucan.lookup(list(ids), self._state.get('console_python'), list(roots))
+
+    def glycan_typing(self, roots = ()):
+        """What follows what in glycowork's glycans, for suggestions while one is typed (slate/linkages.py); None without glycowork."""
+        return linkages.counts(self._state.get('console_python'), list(roots))
+
+    def reference(self, kind, ident):
+        """The paper a PMID or DOI names (slate/references.py); None when offline or turned off."""
+        return None if self._state.get('reference_lookup') is False else references.lookup(kind, ident)
+
+    def open_url(self, url):
+        """Opens a PubMed record or a DOI from a reference hover in the default browser."""
+        if references.link(url):
+            import webbrowser
+            webbrowser.open(url)
 
     # console
     def _python_for(self, root):

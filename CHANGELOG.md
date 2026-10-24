@@ -6,6 +6,12 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+## 0.1.4 (2026-10-24)
+
+- Suggestions while you type a glycan in a string or a table cell: after `Gal(` the linkages Gal takes, after `Gal(b1-4)` the monosaccharides that follow it, and the monosaccharides that start a glycan or a branch, each with how often glycowork's glycans have it there, most common first.
+- GlyTouCan IDs such as `G00031MO` get the drawing of their glycan, in scripts and tables, and a hover with the glycan and its card (glycowork 1.11.0 knows 189,228 IDs).
+- ⊞ Table in the status bar shows a .csv, .tsv or .txt file as a table: aligned columns under a fixed header, glycans drawn, sorting by any column, a filter box, and a click on a row shows its glycan with the row's values as bars per sample group. Hovering a glycan in an abundance table shows its row's values as small bars too.
+- Hovering a PMID or DOI shows the paper's title, authors, journal and year, with links to PubMed and doi.org; file names with a PMID (glycowork's datasets) show it in their tooltip. Only the identifier is sent, when you hover; it can be turned off in Settings.
 - Ctrl+F (and Ctrl+H, replace) finds in the file in front wherever you are, e.g. in the folder tree or the console, where it used to do nothing or open a find box too small to see that then took your typing. It also no longer stops working for the rest of the session after an extension's diff view was closed.
 
 ## 0.1.3 (2026-10-24)
