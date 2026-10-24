@@ -1,6 +1,6 @@
 """Check that slate works in a real window, on Windows and macOS: the page, the bridge, linting, the console, running a
-cell, a traceback link, Markdown output with an inline image, the settings panel, a key, a second launch handing over a
-file, and renaming a file (and moving one to the Trash on macOS).
+cell, a traceback link, Markdown output with an inline image, the settings panel, a key, find after a diff view, a second
+launch handing over a file, and renaming a file (and moving one to the Trash on macOS).
 
 python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
 
@@ -97,6 +97,10 @@ def run(window):
     js(window, f"window.dispatchEvent(new KeyboardEvent('keydown', {key})) || 1")
     check('Ctrl/Cmd+P opens the finder', until(window, "!$('finder').classList.contains('hidden') && 1", wait = 10), expect = 1)
     js(window, "closeFinder() || 1")
+    # a diff view closed before the session's first Ctrl+F once left Monaco unable to build the find widget at all
+    js(window, "showDiff('a\\n', 'b\\n') || 1")
+    js(window, "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})) || 1")
+    check('find works after a diff view', until(window, "editor.getAction('actions.find').run().then(() => document.querySelectorAll('#editor .find-widget').length)", wait = 10), expect = 1)
     check('second launch hands over a file', instance.hand_off([str(OTHER)]))
     check('handed file opened', until(window, f"S.tabs.some((t) => t.path === {json.dumps(str(OTHER))}) && 1"), expect = 1)
     check('no other tabs', js(window, 'S.tabs.length'), expect = 2)  # on macOS AppKit once also opened smoke.py from the command line

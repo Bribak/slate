@@ -2141,7 +2141,15 @@ function showDiff(original, modified, {title = '', language = 'plaintext', actio
     const change = (view.getLineChanges() || [])[0];
     if (change) view.getModifiedEditor().revealLineInCenter(Math.max(change.modifiedStartLineNumber, 1));
   });
-  const close = () => { view.dispose(); left.dispose(); right.dispose(); box.remove(); removeEventListener('keydown', esc, true); if (S.active) editor.focus(); };
+  const close = () => {
+    view.dispose(); left.dispose(); right.dispose(); box.remove(); removeEventListener('keydown', esc, true);
+    // Each new Monaco editor makes the page-wide hover factory use its own services, and the diff editor's inner editors
+    // use the diff editor's, which dispose() ends: every widget built afterwards (the find widget on the session's first
+    // Ctrl+F, the file structure popup) threw, so Ctrl+F did nothing until slate restarted. An editor made with
+    // monaco.editor.create puts back the page's own services, which live as long as the page.
+    monaco.editor.create(document.createElement('div'), {model: null}).dispose();
+    if (S.active) editor.focus();
+  };
   const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
   addEventListener('keydown', esc, true);
   for (const [label, fn] of [...actions, ['Close', () => {}]]) {
@@ -2280,6 +2288,10 @@ function bindUi() {
     delete keys['alt+arrowleft'];
     delete keys['alt+arrowright'];
   }
+  // Monaco hears Ctrl+F only inside an editor, so with the tree, a sidebar button or the status bar focused it did
+  // nothing, and in the console it opened a find widget that the one-line editor clips out of sight, which then took
+  // the typing. Both find in the file in front; the diff view keeps its own find, the settings and notes panels none.
+  const find = {'ctrl+f': 'actions.find', ...(S.mac ? {} : {'ctrl+h': 'editor.action.startFindReplaceAction'})};
   addEventListener('keydown', (e) => {
     if (!$('finder').classList.contains('hidden')) {
       if (e.key === 'Escape') { e.preventDefault(); closeFinder(); return; }
@@ -2288,6 +2300,12 @@ function bindUi() {
       if (e.key === 'Enter') { e.preventDefault(); pickFinder(finderSel); return; }
     }
     const combo = comboOf(e), fn = keys[combo];
+    if (find[combo] && S.active && !(e.target instanceof Element && e.target.closest('#editor, #diff, #settings, #notes'))) {
+      e.preventDefault(); e.stopPropagation();
+      editor.focus();
+      editor.trigger('keyboard', find[combo], null);
+      return;
+    }
     if (fn) { e.preventDefault(); e.stopPropagation(); usage.keys[combo] = (usage.keys[combo] || 0) + 1; fn(); }
   }, true);
   addEventListener('keyup', (e) => {

@@ -6,6 +6,8 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- Ctrl+F (and Ctrl+H, replace) finds in the file in front wherever you are, e.g. in the folder tree or the console, where it used to do nothing or open a find box too small to see that then took your typing. It also no longer stops working for the rest of the session after an extension's diff view was closed.
+
 ## 0.1.3 (2026-10-24)
 
 - Tabs wrap onto two rows at most; with more, both rows scroll sideways (the mouse wheel scrolls them too), as in PyCharm.
