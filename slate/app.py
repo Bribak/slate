@@ -38,7 +38,7 @@ class Api:
 
     def save_state(self, new_state):
         new_state = dict(new_state)
-        for key in ('placement', 'update') + SETTINGS:  # set by hand or by Python, never by the page's session saves, which must not drop them
+        for key in ('placement', 'update', 'notes_seen') + SETTINGS:  # set by hand or by Python, never by the page's session saves, which must not drop them
             if key in self._state:
                 new_state[key] = self._state[key]
         self._state = new_state
@@ -68,7 +68,7 @@ class Api:
         return result[0] if result else None
 
     def update_check(self):
-        """The newer version of slate on GitHub, or None. Asks GitHub at most once a day, and never for a checkout installed
+        """The newer release of slate on GitHub, or None. Asks GitHub at most once a day, and never for a checkout installed
         with pip install -e (slate/update.py)."""
         source = None if self._state.get('update_check') is False else update.origin()
         if source is None:
@@ -83,9 +83,34 @@ class Api:
             state.save(self._state)
         return cache['latest'] if update.newer(cache.get('latest')) else None
 
-    def update_install(self):
-        """Install the newest slate with pip; returns the version now installed, which runs from the next start."""
-        return update.install()
+    def update_notes(self, version):
+        """Markdown: what changed from this version up to release `version`, or None when GitHub cannot be reached."""
+        source = update.origin()
+        try:
+            return source and update.notes(source, __version__, version)
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def whats_new(self):
+        """{version, notes} on the first start of a release newer than the one last shown, once; else None. A fresh install (no
+        update check made yet) only records its version. Offline, it waits for the next start."""
+        source = None if self._state.get('update_check') is False else update.origin()
+        seen = self._state.get('notes_seen')
+        if source is None or seen == __version__:
+            return None
+        found = None
+        if 'update' in self._state and not (seen and update.parts(seen) >= update.parts(__version__)):
+            try:
+                found = {'version': __version__, 'notes': update.notes(source, seen, __version__)}
+            except (OSError, ValueError, KeyError):
+                return None
+        self._state['notes_seen'] = __version__
+        state.save(self._state)
+        return found
+
+    def update_install(self, version):
+        """Install release `version` (from update_check) with pip; returns the version now installed, which runs from the next start."""
+        return update.install(version)
 
     def editor_fonts(self):
         return fonts.jetbrains_mono()

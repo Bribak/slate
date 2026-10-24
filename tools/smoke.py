@@ -100,6 +100,10 @@ def run(window):
     if MAC:  # Windows' Recycle Bin is checked by hand: a runner without one would show Windows' delete-for-good question and hang
         js(window, f"api.trash({json.dumps(str(PROJECT / 'renamed.txt'))}) || 1")
         check('moved to the Trash', not (PROJECT / 'renamed.txt').exists())
+    table = PROJECT / 'table.csv'
+    table.write_text('glycan,abundance\nNeu5Ac(a2-3)Gal(b1-4)GlcNAc,1\n"Fuc(a1-2)Gal",2\n', encoding = 'utf-8')
+    js(window, f"openFile({json.dumps(str(table))}).then(() => 1)")
+    check('glycan cells of a table in SNFG colours', until(window, colors.replace('|blue', '|blue|red'), wait = 10), expect = 5)
     errors = js(window, "JSON.stringify(usage.events.filter((e) => /error/.test(e.kind)).map((e) => e.call || e.message))")
     check('no page or API errors', json.loads(errors or '["no answer"]'), expect = [])
 

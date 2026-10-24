@@ -125,7 +125,7 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 .diff-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
 .diff-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff-body { flex: 1; min-height: 0; }
-#settings { position: fixed; top: 50px; left: 50%; transform: translateX(-50%); width: min(640px, 92vw); max-height: calc(100vh - 100px); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 8px 30px #0009; z-index: 55; display: flex; flex-direction: column; }
+#settings, #notes { position: fixed; top: 50px; left: 50%; transform: translateX(-50%); width: min(640px, 92vw); max-height: calc(100vh - 100px); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 8px 30px #0009; z-index: 55; display: flex; flex-direction: column; }
 .settings-body { overflow: auto; padding: 4px 16px 14px; }
 .settings-section { margin: 14px 0 6px; font-size: 11px; color: var(--fg-dim); letter-spacing: .04em; text-transform: uppercase; }
 .settings-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 3px 0; }
@@ -137,6 +137,14 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 3px 4px; outline: none; }
 select:focus { border-color: var(--accent); }
 #settings-restart { margin-top: 2px; border-color: var(--border); }
+/* what changed in an update (showNotes), from CHANGELOG.md */
+.notes-body { overflow: auto; padding: 2px 18px 14px; line-height: 1.45; }
+.notes-body h4 { margin: 14px 0 6px; font-size: 14px; color: var(--fg); }
+.notes-body h3, .notes-body h5 { margin: 12px 0 4px; }
+.notes-body ul { margin: 4px 0; padding-left: 20px; }
+.notes-body li { margin: 3px 0; }
+.notes-body p { margin: 6px 0; color: var(--fg-dim); }
+.notes-body code { font-family: 'slate mono', monospace; font-size: 12px; background: var(--panel); padding: 0 3px; border-radius: 3px; }
 /* glycan strings: residues in their SNFG colour (glycowork's palette, lightened for the dark background), linkages dimmed */
 .monaco-editor .snfg-white { color: #D9D9D9 !important; }
 .monaco-editor .snfg-blue { color: #3FAEDB !important; }

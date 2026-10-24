@@ -848,6 +848,13 @@ function registerProviders() {
 const GLYCAN_STRING = /(['"])([A-Za-z[{][A-Za-z0-9?\-()[\]{},.|/]*?)\1/g;
 const NOT_TEXT = /[fFbB][A-Za-z]?$/;  // a string prefix that makes the quotes something other than plain text
 const LINKAGE = /\([abo?][\d?]?-[\d?][\d?|/,]*\)/;
+// A glycan cell in a .csv, .tsv or .txt tab: a quoted cell, which may hold commas (3,6-Anhydro-L-Gal), or glycans.IN_TEXT's
+// characters (commas only inside a linkage) from one delimiter, space or quote to the next, so it may start with a digit
+// (6dTal, 3-Anhydro-Gal). In glycowork's and CandyCrunch's tables: 66,216 cells, 29,074 distinct glycans, none of them prose.
+const TABLE_GLYCAN = /(["'])([A-Za-z0-9[{][A-Za-z0-9?\-()[\]{},.|/]*?)\1|(^|[\s,;"'])([A-Za-z0-9[{](?:[A-Za-z0-9?\-.|/[\]{}]|\([^()\s]*\))*)(?![^\s,;"'])/g;
+const TABLE_TAB = /\.(csv|tsv|txt)$/i;
+const TABLE_LINE = 10_000;  // Monaco renders no more of a line (stopRenderingLineAfter); glycowork's binding table has a 201,567-character header of glycans
+const TABLE_GLYCANS = 150;  // distinct glycans a table shows at once, nearest the middle of the screen, so they never outnumber GLYCANS_KEPT
 const GLYCANS_KEPT = 300;  // drawings, most recently shown first; each is about 11 KB of data URLs
 const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, colors: null, off: false, noProcess: false, count: 0, cards: new Map()};
 
@@ -897,10 +904,36 @@ function glycansIn(model, from, to) {
     const line = model.getLineContent(n);
     if (line.length > 3000 || !line.includes('-')) continue;
     for (const m of line.matchAll(GLYCAN_STRING)) {
-      if (LINKAGE.test(m[2]) && !NOT_TEXT.test(line.slice(Math.max(0, m.index - 2), m.index))) out.push({glycan: m[2], line: n, start: m.index + 1, end: m.index + m[0].length + 1});
+      if (LINKAGE.test(m[2]) && !NOT_TEXT.test(line.slice(Math.max(0, m.index - 2), m.index))) out.push({glycan: m[2], line: n, start: m.index + 1, from: m.index + 2, end: m.index + m[0].length + 1});
     }
   }
   return out;
+}
+
+// The glycan cells on lines from..to, those nearest `middle` when there are more than TABLE_GLYCANS. start..end is the hover's
+// range (quotes included), `from` the glycan's first column, and `end` where its drawing goes.
+function tableGlycansIn(model, from, to, middle = from) {
+  const out = [];
+  for (let n = from; n <= to; n++) {
+    const line = model.getLineContent(n);
+    if (!line.includes('-')) continue;
+    for (const m of line.slice(0, TABLE_LINE).matchAll(TABLE_GLYCAN)) {
+      const glycan = m[2] || m[4].replace(/\.+$/, '');  // a cell at the end of a sentence in a .txt
+      if (!LINKAGE.test(glycan) || (line.length > TABLE_LINE && m.index + m[0].length >= TABLE_LINE)) continue;
+      if (m[2] && NOT_TEXT.test(line.slice(Math.max(0, m.index - 2), m.index))) continue;  // f"{p}(?1-?)" quoted in a .txt
+      const start = m.index + 1 + (m[2] ? 0 : m[3].length);
+      out.push({glycan, line: n, start, from: m[2] ? start + 1 : start, end: m[2] ? start + m[0].length : start + glycan.length});
+    }
+  }
+  const shown = new Set();
+  for (const f of [...out].sort((a, b) => Math.abs(a.line - middle) - Math.abs(b.line - middle))) if (shown.size < TABLE_GLYCANS) shown.add(f.glycan);
+  return shown.size < TABLE_GLYCANS ? out : out.filter((f) => shown.has(f.glycan));
+}
+
+// The glycans of a Python tab's strings or a table tab's cells on lines from..to; null for any other tab
+function glycansOn(model, from, to, middle) {
+  if (model.getLanguageId() === 'py') return glycansIn(model, from, to);
+  return TABLE_TAB.test(model.uri.path) ? tableGlycansIn(model, from, to, middle) : null;
 }
 
 const svgUrl = (svg) => 'data:image/svg+xml;base64,' + btoa(Array.from(new TextEncoder().encode(svg), (b) => String.fromCharCode(b)).join(''));
@@ -935,10 +968,10 @@ function showGlycans(found) {
 // Glycans on the visible lines and 30 either side: the 2,167 in glycowork's test_core_functions.py would take 4 s to draw at once
 const refreshGlycans = debounce(async () => {
   const model = editor.getModel(), ranges = editor.getVisibleRanges();
-  if (glycans.off || !model || model.getLanguageId() !== 'py' || !ranges.length) { glycans.decorations.clear(); glycans.colors.clear(); return; }
-  const from = Math.max(1, ranges[0].startLineNumber - 30), to = Math.min(model.getLineCount(), ranges[ranges.length - 1].endLineNumber + 30);
-  const found = glycansIn(model, from, to);
-  glycans.colors.set(found.flatMap((f) => snfgRuns(f.line, f.start + 1, f.glycan)));  // f.start is the opening quote
+  const first = ranges.length && ranges[0].startLineNumber, last = ranges.length && ranges[ranges.length - 1].endLineNumber;
+  const found = glycans.off || !model || !ranges.length ? null : glycansOn(model, Math.max(1, first - 30), Math.min(model.getLineCount(), last + 30), (first + last) / 2);
+  if (!found) { glycans.decorations.clear(); glycans.colors.clear(); return; }
+  glycans.colors.set(found.flatMap((f) => snfgRuns(f.line, f.from, f.glycan)));
   if (glycans.noProcess) return;
   showGlycans(found);
   const missing = [...new Set(found.map((f) => f.glycan))].filter((g) => !glycans.drawn.has(g) && !glycans.waiting.has(g));
@@ -971,9 +1004,9 @@ function setupGlycans(saved) {
   editor.onDidChangeModelContent(refreshGlycans);
   editor.onDidScrollChange((e) => e.scrollTopChanged && refreshGlycans());
   editor.onDidLayoutChange(refreshGlycans);
-  monaco.languages.registerHoverProvider('py', {
+  const hover = {
     async provideHover(model, position) {
-      const f = glycans.off || glycans.noProcess ? null : glycansIn(model, position.lineNumber, position.lineNumber).find((g) => position.column >= g.start && position.column <= g.end);
+      const f = glycans.off || glycans.noProcess ? null : (glycansOn(model, position.lineNumber, position.lineNumber) || []).find((g) => position.column >= g.start && position.column <= g.end);
       const d = f && glycans.drawn.get(f.glycan);
       if (!d) return null;
       const card = await Promise.race([glycanCard(f.glycan), new Promise((r) => setTimeout(() => r(''), 400))]);
@@ -984,7 +1017,9 @@ function setupGlycans(saved) {
         contents: [{value: `![SNFG drawing](${d.full}|width=${Math.round(d.size[0] * scale)},height=${Math.round(d.size[1] * scale)})`},
           ...(card ? [{value: card, isTrusted: true}] : [])]};
     },
-  });
+  };
+  monaco.languages.registerHoverProvider('py', hover);
+  monaco.languages.registerHoverProvider('plaintext', hover);  // .csv, .tsv and .txt tabs (glycansOn)
   monaco.editor.registerCommand('slate.motifSearch', (accessor, motif) => searchMotif(motif));
 }
 
@@ -1918,26 +1953,77 @@ async function openSettings() {
   addEventListener('mousedown', outside, true);
 }
 
-// A line in the status bar when GitHub has a newer slate than this one (Api.update_check, at most once a day); a click installs it.
+// CHANGELOG.md's few kinds of lines (headings, bullets, paragraphs, `code`, **bold**) as HTML. Links stay text: following one would
+// take the window away from slate.
+function markdownHtml(md) {
+  const inline = (s) => escapeHtml(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+  const blocks = md.trim().split(/\n\s*\n/);
+  return blocks.map((block) => {
+    const heading = block.match(/^(#{1,4}) (.*)/);
+    if (heading) return `<h${heading[1].length + 2}>${inline(heading[2])}</h${heading[1].length + 2}>`;
+    if (/^[-*] /.test(block)) return `<ul>${block.split(/\n(?=[-*] )/).map((item) => `<li>${inline(item.slice(2))}</li>`).join('')}</ul>`;
+    return `<p>${inline(block)}</p>`;
+  }).join('');
+}
+
+// What changed, in an overlay like the settings panel, with `actions` ([label, fn]) next to Close.
+function showNotes(title, md, actions = []) {
+  if ($('notes')) $('notes').remove();
+  const box = el('div'), head = el('div', 'diff-head'), body = el('div', 'notes-body');
+  box.id = 'notes';
+  head.append(el('span', 'diff-title', title), el('span', 'spacer'));
+  body.innerHTML = markdownHtml(md);
+  box.append(head, body);
+  document.body.append(box);
+  const close = () => { box.remove(); removeEventListener('keydown', esc, true); removeEventListener('mousedown', outside, true); if (S.active) editor.focus(); };
+  const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+  const outside = (e) => { if (!box.contains(e.target)) close(); };
+  for (const [label, fn] of [...actions, ['Close', () => {}]]) {
+    const b = el('button', null, label);
+    b.onclick = () => { close(); fn(); };
+    head.append(b);
+  }
+  addEventListener('keydown', esc, true);
+  addEventListener('mousedown', outside, true);
+}
+
+// The first start of a newer release shows "Updated to slate X" in the status bar once, which opens what changed
+// (Api.whats_new); otherwise a line when GitHub has a newer release than this one (Api.update_check, at most once a day),
+// which opens what it changes and installs it.
 async function checkUpdate() {
+  const notice = $('st-update');
+  let fresh = null;
+  try { fresh = await api.whats_new(); } catch (e) {}
+  if (fresh) {
+    notice.textContent = `Updated to slate ${fresh.version}: what's new`;
+    notice.title = 'What changed since the version you had';
+    notice.classList.remove('hidden');
+    notice.onclick = () => showNotes(`What's new in slate ${fresh.version}`, fresh.notes);
+    return;
+  }
   let version = null;
   try { version = await api.update_check(); } catch (e) { return; }
   if (!version) return;
-  const notice = $('st-update');
   notice.textContent = `slate ${version} is available`;
-  notice.title = 'Click to install it; it runs from the next start of slate';
+  notice.title = 'Click to see what changed and install it; it runs from the next start of slate';
   notice.classList.remove('hidden');
-  notice.onclick = async () => {
-    if (!confirm(`Install slate ${version} now? The open window keeps running this version until slate is restarted.`)) return;
+  const install = async () => {
     notice.onclick = null;
     notice.textContent = `Installing slate ${version}…`;
     try {
-      notice.textContent = `slate ${await api.update_install()} installed: restart slate to use it`;
+      notice.textContent = `slate ${await api.update_install(version)} installed: restart slate to use it`;
       notice.title = '';
     } catch (e) {
       toast(`The update failed: ${errMsg(e)}`);
       notice.classList.add('hidden');
     }
+  };
+  notice.onclick = async () => {
+    let md = null;
+    try { md = await api.update_notes(version); } catch (e) {}
+    showNotes(`slate ${version} is available`, `${md || 'GitHub could not be reached for the notes.'}\n\n` +
+      'The open window keeps running this version until slate is restarted.', [['Install', install]]);
   };
 }
 

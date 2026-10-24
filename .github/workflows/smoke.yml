@@ -1,5 +1,6 @@
 # slate in a real window on GitHub's macOS and Windows machines (tools/smoke.py), and on macOS also the app that
-# `python -m slate --install` makes, opened with a file the way Finder opens one.
+# `python -m slate --install` makes, opened with a file the way Finder opens one. A push to main whose __version__ has no
+# release yet becomes release vX.Y.Z once both pass: that is what slate's update notice offers and installs (slate/update.py).
 name: smoke
 
 on:
@@ -40,3 +41,24 @@ jobs:
           pkill -f 'slate' || true
           python -m slate --uninstall
           test ! -e "$app"
+
+  release:
+    needs: smoke
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Release __version__ if it is new and newer than the last release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -nE "s/^__version__ = ['\"]([0-9.]+)['\"].*/\1/p" slate/__init__.py)
+          last=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/v||' | sort -V | tail -n 1)
+          echo "__version__ $version, last release ${last:-none}"
+          if [ -z "$version" ] || [ "$version" = "$last" ]; then exit 0; fi
+          if ! printf '%s\n' "$last" "$version" | sort -V -C; then
+            echo "::warning::__version__ $version is older than release $last, so it is not released"; exit 0
+          fi
+          gh release create "v$version" --target "$GITHUB_SHA" --title "slate $version" --generate-notes

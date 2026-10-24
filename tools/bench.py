@@ -4,7 +4,8 @@ python tools/bench.py LABEL [--flags "<chromium flags>"] [--options '<Monaco opt
 
 Runs an isolated session (%TEMP%\\slate-bench\\LABEL) with 8 tabs from glycowork, scrolls a 2,350-line file, types into a
 scratch copy (nothing is saved), then fires the window's blur event and measures again after 15 s, as when you switch to
-another app. Prints one JSON line and writes it to %TEMP%\\slate-bench\\LABEL.json. RAM is Task Manager's number (private
+another app. With --line N it also times scrolling and typing at line N (line_scroll, line_typing), with what that line
+shows on screen. Prints one JSON line and writes it to %TEMP%\\slate-bench\\LABEL.json. RAM is Task Manager's number (private
 working set) per process role.
 """
 import argparse
@@ -63,7 +64,7 @@ PROBE = r"""
   const stats = (a) => { const s = [...a].sort((x, y) => x - y); return {mean: +(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1), p95: +s[Math.floor(s.length * 0.95)].toFixed(1)}; };
   editor.updateOptions(OPTIONS);
   const keep = editor.getModel();
-  const scratch = monaco.editor.createModel(keep.getValue(), 'py');
+  const scratch = monaco.editor.createModel(keep.getValue(), keep.getLanguageId(), monaco.Uri.parse('inmemory://bench/scratch' + (keep.uri.path.match(/\.[^./]+$/) || [''])[0]));  // a table stays a table
   editor.setModel(scratch);
   for (let i = 0; i < 5; i++) await frame();
   const scroll = []; let last = performance.now();
@@ -109,6 +110,25 @@ $g = [Drawing.Graphics]::FromImage($bmp); $dc = $g.GetHdc()
 [BenchCap]::PrintWindow($h, $dc, 2) | Out-Null  # PW_RENDERFULLCONTENT: slate's own pixels, whatever covers it on screen
 $g.ReleaseHdc($dc)
 $bmp.Save($Out, [Drawing.Imaging.ImageFormat]::Png)
+"""
+# With --line: scrolling and typing where that line is, with what it shows (glycan drawings) on screen. The probe above
+# cannot see those: it scrolls a fresh copy 600 lines from where anything was drawn, faster than drawings are asked for.
+LINE_PROBE = r"""
+(async () => {
+  const frame = () => new Promise((r) => requestAnimationFrame(r));
+  const stats = (a) => { const s = [...a].sort((x, y) => x - y); return {mean: +(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1), p95: +s[Math.floor(s.length * 0.95)].toFixed(1)}; };
+  const keep = editor.getModel(), view = editor.saveViewState(), top = editor.getScrollTop();
+  const scroll = []; let last = performance.now();
+  for (let i = 0; i < 120; i++) { editor.setScrollTop(top + (i % 60 < 30 ? i % 60 : 60 - i % 60) * 20); await frame(); const now = performance.now(); scroll.push(now - last); last = now; }
+  const scratch = monaco.editor.createModel(keep.getValue(), keep.getLanguageId(), monaco.Uri.parse('inmemory://bench/line' + (keep.uri.path.match(/\.[^./]+$/) || [''])[0]));
+  editor.setModel(scratch); editor.restoreViewState(view);
+  await new Promise((r) => setTimeout(r, 1500));  // its drawings come back from the page's cache
+  editor.setPosition({lineNumber: editor.getVisibleRanges()[0].startLineNumber + 8, column: 1}); editor.focus();
+  const typing = [];
+  for (let i = 0; i < 80; i++) { const t0 = performance.now(); editor.trigger('bench', 'type', {text: i % 10 === 9 ? '\n' : 'x'}); await frame(); await frame(); typing.push(performance.now() - t0); }
+  editor.setModel(keep); editor.restoreViewState(view); scratch.dispose();
+  return JSON.stringify({line_scroll: stats(scroll), line_typing: stats(typing)});
+})()
 """
 RESUME = r"""
 (async () => {
@@ -185,6 +205,8 @@ def measure(window):
     time.sleep(3)
     result['ram_active'] = memory()
     subprocess.run(['powershell', '-NoProfile', '-Command', f'& {{ {CAPTURE} }} {os.getpid()} "{OUT / (args.label + ".png")}"'], capture_output = True, creationflags = subprocess.CREATE_NO_WINDOW)
+    if args.line:
+        result.update(json.loads(need(js(window, LINE_PROBE), 'probe at --line')))
     on_top(window, False)
     BACKGROUND.set()
     js(window, "window.dispatchEvent(new Event('blur')) && 1")

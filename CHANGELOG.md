@@ -1,0 +1,38 @@
+# What's new in slate
+
+slate shows the sections below when an update is available and once after it is installed (slate/update.py). Each version
+gets a `## X.Y.Z (date)` section, newest first, written for the people who use slate. Changes that are not released yet go
+under `## Unreleased`; the version bump renames it.
+
+## Unreleased
+
+## 0.1.2 (2026-10-24)
+
+- Updates install a tested release: a new version is released only after slate passed its tests on Windows and macOS, so an update never brings work in progress.
+- What changed: clicking "slate X is available" shows these notes before installing, and the first start after an update offers them once in the status bar.
+- Glycans in tables: glycan cells in .csv, .tsv and .txt files get their SNFG drawing, coloured residues and hover card, as glycan strings in scripts do. Quoted cells may hold commas, and tables are never checked.
+- glycowork, CandyCrunch, glycorender or glycontact installed with pip while slate is open now get hints and Ctrl+click within seconds, without restarting slate.
+
+## 0.1.1 (2026-10-23)
+
+- Back and forward: Ctrl+Alt+Left/Right (or Alt+Left/Right, or the mouse's side buttons) return to where you jumped from, as in PyCharm.
+- File structure: Ctrl+F12 lists the file's classes and functions to jump to.
+- Right-click a tab to close the others, the ones to its right or all unchanged ones, to copy its path, or to show it in the tree or Explorer.
+- Right-click a file or folder in the tree to rename it (its open tabs follow) or to delete it to the Recycle Bin.
+- Hints and Ctrl+click also reach pip-installed glycorender and glycontact, besides glycowork and CandyCrunch.
+- Glycan drawings: prose in docstrings and f-strings are no longer drawn as glycans.
+- The glycan hover card stays in view below the drawing.
+- Faster: function hints after a pause (about 20 ms instead of up to half a second), less CPU while idle, and less memory after checking big files.
+- The README has screenshots.
+
+## 0.1.0 (2026-10-23)
+
+The first version shared with the group.
+
+- Glycans in the code: IUPAC-condensed strings get their SNFG drawing next to them, a hover card with mass, composition and motifs, warnings for glycans glycowork cannot read, and a motif search across the open folders.
+- Signature hints and docstrings for the open projects and for glycowork and CandyCrunch; Ctrl+click goes to definitions in a few milliseconds.
+- glycowork's style checks underlined as you type, with every file compiled for syntax errors.
+- A Python console with figures, `# %%` cells, Ctrl+Enter and Shift+Enter to run code, and F5 to run the file.
+- PyCharm's Darcula colours and JetBrains Mono, tabs from any number of projects, Ctrl+P and Ctrl+Shift+F across them.
+- A settings panel (Ctrl+Alt+S) with a Python per project, and a daily check for updates.
+- Installs as an app on Windows and macOS, opens .py files by double-click, and keeps to one window.
