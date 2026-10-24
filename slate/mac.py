@@ -1,7 +1,7 @@
 """The macOS side of slate's window (app.py; slate/win.py is the Windows side). Imported on macOS only, where pywebview
 brings PyObjC.
 
-pywebview's Cocoa backend needs four changes, made by `prepare` before the window exists:
+pywebview's Cocoa backend needs three changes, made by `prepare` before the window exists:
 * Its WKWebView subclass answers Cmd+Z, Cmd+A, Cmd+W and Cmd+Q itself, before the page sees them, so Monaco's undo and
   select-all never ran, Cmd+W closed the whole window instead of a tab, and Cmd+Q quit without asking about unsaved
   files. A local event monitor now hands those keys to WKWebView's own keyDown: (the page first, as in Safari) before
@@ -12,14 +12,8 @@ pywebview's Cocoa backend needs four changes, made by `prepare` before the windo
   such super, so a subclass takes its place. NSTreatUnknownArgumentsAsOpen = NO keeps AppKit from passing it the
   process's own command line as files too.
 * The menu bar would say "Python", the name of the process's bundle.
-* Its bridge handler reads a page message's body['params'], and a message without one raised KeyError inside an
-  Objective-C callback, which aborts the app (exit 134). The macOS smoke runs of ff10c88 and 4e836d2 died that way after
-  a diff view was closed, with every smoke probe already turning undefined and rejections into values, so the page sent
-  it; which part is not known yet. Such a message now gets params None, and its text goes to stderr.
 """
-import json
 import os
-import sys
 
 _monitor = None  # the key monitor, kept alive for the life of the app
 
@@ -85,20 +79,6 @@ def prepare(open_paths, quitting):
         def applicationWillTerminate_(self, notification):
             quitting()
     cocoa.BrowserView.AppDelegate = SlateAppDelegate
-
-    class Bridge:
-        """pywebview's json, except that a page message without params gets params None and is printed to stderr."""
-        def __getattr__(self, name):
-            return getattr(json, name)
-
-        @staticmethod
-        def loads(text, *args, **kwargs):
-            body = json.loads(text, *args, **kwargs)
-            if isinstance(body, dict) and 'funcName' in body and 'params' not in body:
-                print(f'slate: page message without params: {text[:300]}', file = sys.stderr, flush = True)
-                body['params'] = None
-            return body
-    cocoa.json = Bridge()
 
 
 def get_placement(window):

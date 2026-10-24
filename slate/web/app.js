@@ -101,8 +101,10 @@ function flushUsage() {
 }
 
 addEventListener('error', (e) => note('js_error', {message: String(e.message).slice(0, 300), where: `${e.filename}:${e.lineno}:${e.colno}`, stack: e.error && e.error.stack}));
-// Monaco rejects with 'Canceled' whenever it drops work it no longer needs, which is not an error
-addEventListener('unhandledrejection', (e) => (e.reason && e.reason.name === 'Canceled') || note('js_error', {message: String((e.reason && e.reason.message) || e.reason).slice(0, 300), stack: e.reason && e.reason.stack}));
+// Monaco rejects with 'Canceled' whenever it drops work it no longer needs, which is not an error, and with 'no diff result
+// available' when a diff view closes before its worker answered (the worker finds the models gone; macOS smoke, 2026-10-24)
+const dropped = (r) => r && (r.name === 'Canceled' || r.message === 'no diff result available');
+addEventListener('unhandledrejection', (e) => dropped(e.reason) || note('js_error', {message: String((e.reason && e.reason.message) || e.reason).slice(0, 300), stack: e.reason && e.reason.stack}));
 try {
   new PerformanceObserver((list) => {
     for (const t of list.getEntries()) {

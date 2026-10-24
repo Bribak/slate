@@ -39,14 +39,20 @@ results, failed = {'platform': sys.platform}, []
 
 def js(window, code, wait = 60):
     done, box = threading.Event(), {}
-    # pywebview calls back only for promises; a plain value never arrives. A promise of undefined loses its `params` in
-    # pywebview's JSON, and on macOS its handler then raises KeyError and aborts the app, so undefined goes back as null.
-    # A rejection goes back as {'error'}, since pywebview sends its reason the same way
-    code = (f'(async () => ({code.strip()}))().then((v) => v === undefined ? null : v, '
-            "(e) => ({error: String(e && e.stack || e)}))")
-    threading.Thread(target = window.evaluate_js, args = (code,), kwargs = {'callback': lambda r: (box.update(r = r), done.set())}, daemon = True).start()
+    # pywebview calls back only for promises; a plain value never arrives. A value its JSON drops (undefined) loses the
+    # message's `params`, and on macOS its handler then raised KeyError and aborted the app. So the page sends a JSON string
+    # of its own: undefined as null, a rejection as {error}, and anything JSON cannot hold as {unserializable}. The macOS
+    # runs of 2026-10-24 got such a message although undefined and rejections were already mapped; which probe sent it is
+    # what the stderr line below is for
+    script = (f'(async () => ({code.strip()}))().then((v) => v === undefined ? null : v, (e) => ({{error: String(e && e.stack || e)}}))'
+              ".then((v) => { try { const s = JSON.stringify(v); if (s !== undefined) return s; } catch (e) {} "
+              "return JSON.stringify({unserializable: typeof v + ': ' + String(v).slice(0, 200)}); })")
+    threading.Thread(target = window.evaluate_js, args = (script,), kwargs = {'callback': lambda r: (box.update(r = r), done.set())}, daemon = True).start()
     done.wait(wait)
-    return box.get('r')
+    value = json.loads(box['r']) if isinstance(box.get('r'), str) else box.get('r')
+    if isinstance(value, dict) and 'unserializable' in value:
+        print(f'smoke: {code.strip()[:120]!r} gave {value["unserializable"]}', file = sys.stderr, flush = True)
+    return value
 
 
 def until(window, condition, wait = 60):
@@ -100,7 +106,7 @@ def run(window):
     check('Ctrl/Cmd+P opens the finder', until(window, "!$('finder').classList.contains('hidden') && 1", wait = 10), expect = 1)
     js(window, "closeFinder() || 1")
     # a diff view closed before the session's first Ctrl+F once left Monaco unable to build the find widget at all
-    js(window, "showDiff('a\\n', 'b\\n') || 1")
+    js(window, "(showDiff('a\\n', 'b\\n'), 1)")  # showDiff returns its close function, which JSON cannot carry
     js(window, "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})) || 1")
     check('find works after a diff view', until(window, "editor.getAction('actions.find').run().then(() => document.querySelectorAll('#editor .find-widget').length)", wait = 10), expect = 1)
     check('second launch hands over a file', instance.hand_off([str(OTHER)]))
