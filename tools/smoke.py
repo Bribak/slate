@@ -1,6 +1,6 @@
 """Check that slate works in a real window, on Windows and macOS: the page, the bridge, linting, the console, running a
-cell, a traceback link, the settings panel, a key, a second launch handing over a file, and renaming a file (and
-moving one to the Trash on macOS).
+cell, a traceback link, Markdown output with an inline image, the settings panel, a key, a second launch handing over a
+file, and renaming a file (and moving one to the Trash on macOS).
 
 python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
 
@@ -84,6 +84,11 @@ def run(window):
     check('Shift+Enter moved to the next cell', js(window, 'editor.getPosition().lineNumber'), expect = 7)
     js(window, 'runAtCursor(false) || 1')
     check('traceback links to the file', until(window, "[...document.querySelectorAll('#console-out .link')].map((s) => s.textContent.trim()).join('|')"))
+    markdown = ("import base64\nsvg = base64.b64encode(b'<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>').decode()\n"
+                "class Note:\n    def _repr_markdown_(self):\n        return '**bold** <img src=\"data:image/svg+xml;base64,' + svg + '\" height=\"12\">'\n"
+                "display(Note())")  # display() is a builtin, as in Jupyter; the image stands in for GlycoDraw's as_markdown()
+    js(window, f"(consoleInput.setValue({json.dumps(markdown)}), submitConsole(), 1)")
+    check('Markdown output with its image', until(window, "(document.querySelector('#console-out div.md b') && document.querySelector('#console-out div.md img.chip') || {}).naturalWidth"), expect = 10)
     check('settings panel lists Pythons', until(window, "openSettings().then(() => document.querySelectorAll('#settings select option').length)"))
     js(window, "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})) || 1")
     key = "{key: 'p', code: 'KeyP', metaKey: true, bubbles: true}" if MAC else "{key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true}"

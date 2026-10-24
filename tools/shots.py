@@ -1,7 +1,8 @@
 """The README's screenshots (docs/*.png): slate in a real window with a throwaway session, a short analysis script and
 glycowork's checkout among its folders, driven through the page and captured with PrintWindow.
 
-python tools/shots.py [--out docs]   Windows only; needs Pillow, and glycowork with matplotlib for the console's Python
+python tools/shots.py [--out docs]   Windows only; needs Pillow, and glycowork (1.11.1, for as_markdown) with matplotlib and
+                                     IPython for the console's Python
 
 Each scene is cropped to the part of the window it is about and saved at twice its CSS size (at most the screen's own
 scaling), so it stays sharp on high-resolution screens. The window stays on top while it runs, since Chromium draws no
@@ -56,6 +57,10 @@ fig, ax = plt.subplots(figsize = (5, 1.6))
 ax.barh(['sialylated', 'other'], [sialylated, sum(abundance.values()) - sialylated], color = ['#A5509C', '#9B9B9B'])
 ax.set_xlabel('% of the glycan signal')
 plt.show()
+
+# %% in a sentence
+from IPython.display import Markdown
+Markdown(f'The most abundant glycan, {GlycoDraw(best, sticker = True).as_markdown()}, is **{abundance[best]}%** of the signal.')
 '''
 LINES = DEMO_TEXT.split('\n')
 SLEX_LINE = next(n for n, line in enumerate(LINES, 1) if 'Fuc(a1-3)' in line)
@@ -227,15 +232,18 @@ def run(window):
     if until(window, "/hold it/.test($('search-status').textContent) && 1", 'motif search results', wait = 60):
         js(window, "(document.querySelector('.sr-line').click(), 1)")
         time.sleep(1)
-        shoot(window, 'motif-search', "(() => { const s = $('sidebar').getBoundingClientRect(); return {x: 0, y: 0, w: s.right + 820, h: 560}; })()")
+        shoot(window, 'motif-search', "(() => { const s = $('sidebar').getBoundingClientRect(); return {x: 0, y: 0, w: s.right + 820, h: 552}; })()")  # ends above line 27, the Markdown cell
     # the console, after running the script's cells
     js(window, f"(activate(S.tabs.find((t) => t.path === {json.dumps(str(DEMO))})), toggleConsole(true, false), $('console-clear').click(), editor.setPosition({{lineNumber: 3, column: 1}}), 1)")
-    for _ in range(3):
+    for _ in range(4):
         js(window, 'runAtCursor(true) || 1')
         time.sleep(0.5)
-    if until(window, "document.querySelectorAll('#console-out img').length >= 2 && !document.querySelector('#console-busy:not(.hidden)') && 1", 'console figures', wait = 90):
-        js(window, "(editor.revealLineNearTop(16), $('console-out').scrollTop = 1e6, 1)")
+    if until(window, "document.querySelectorAll('#console-out img.plot').length >= 2 && document.querySelector('#console-out div.md img') && !document.querySelector('#console-busy:not(.hidden)') && 1", 'console figures', wait = 90):
+        js(window, "(editor.revealLineNearTop(27), $('console-out').scrollTop = 1e6, 1)")
+        time.sleep(1)  # without it, PrintWindow once caught the editor and the console header half repainted
         shoot(window, 'console', f"{REGION}(['#main'], 0, null)")
+    else:
+        print('console:', js(window, "$('console-out').innerText.slice(-800)"))
 
 
 def start(*a, **kw):

@@ -1,7 +1,9 @@
 """The process that draws glycans for the editor (slate/glycans.py). It imports glycowork once and then answers one JSON line
 per request on stdin with one JSON line on stdout:
-* a list of IUPAC-condensed glycans: {glycan: [small, full] or null}. small is drawn compact and without linkage labels, for
-  next to the string; full is the usual GlycoDraw, for the hover.
+* a list of IUPAC-condensed glycans: {glycan: [svg, sticker] or null}, drawn compact and without linkage labels, as a
+  die-cut sticker where glycowork has them (sticker true), for next to the string.
+* {"op": "full", "glycan": ...}: {"svg": ...}, the usual GlycoDraw, for the hover. Only hovered glycans need it, so it is
+  drawn then rather than with every glycan on screen.
 * {"op": "check", "glycans": [...]}: {glycan: {"canonical": ...} or {"error": ...}}, through canonicalize_iupac.
 * {"op": "info", "glycan": ...}: the hover card: mass, composition, class, motifs, canonical form.
 * {"op": "match", "query": ..., "glycans": [...]}: {"matches": [...]} for a motif name from glycowork's motif list, a
@@ -35,9 +37,18 @@ def send(msg):
     REAL_OUT.flush()
 
 
+def small(glycan, GlycoDraw):
+    """[svg, sticker]: a die-cut sticker, which glycorender bakes into the SVG, or on glycowork before 1.10.1 the plain
+    drawing, which the editor puts on a light chip."""
+    try:
+        return [GlycoDraw(glycan, compact = True, show_linkage = False, suppress = True, sticker = True).as_standalone_svg(), True]
+    except TypeError:
+        return [GlycoDraw(glycan, compact = True, show_linkage = False, suppress = True).as_svg(), False]
+
+
 def draw(glycan, GlycoDraw):
     try:
-        return [GlycoDraw(glycan, compact = True, show_linkage = False, suppress = True).as_svg(), GlycoDraw(glycan, suppress = True).as_svg()]
+        return small(glycan, GlycoDraw)
     except Exception:  # not a glycan after all, or one GlycoDraw cannot draw: the editor then shows nothing for it
         return None
 
@@ -149,6 +160,11 @@ def answer(msg, GlycoDraw, tools):
     if isinstance(msg, list):
         return {glycan: draw(glycan, GlycoDraw) for glycan in msg}
     op = msg.get('op')
+    if op == 'full':
+        try:
+            return {'svg': GlycoDraw(msg['glycan'], suppress = True).as_svg()}
+        except Exception as e:
+            return {'error': f'{type(e).__name__}: {e}'[:300]}
     if op == 'check':
         return {g: tools().check(g) for g in msg['glycans']}
     if op == 'info':

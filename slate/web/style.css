@@ -68,7 +68,10 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 
 /* tabs and editor */
 #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-#tabs { display: flex; flex-wrap: wrap; background: var(--panel); border-bottom: 1px solid var(--border); min-height: 0; max-height: 30%; overflow-y: auto; }
+/* two rows at most; with more tabs fitTabs (app.js) widens the strip and both rows scroll sideways */
+#tabs { flex: none; background: var(--panel); border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; }
+#tabs::-webkit-scrollbar { height: 4px; }
+#tab-strip { display: flex; flex-wrap: wrap; }
 .tab { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px 0 10px; cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap; user-select: none; color: var(--fg-dim); }
 .tab:hover { background: var(--hover); }
 .tab.active { background: var(--bg); color: var(--fg); }
@@ -88,8 +91,11 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #editor { position: absolute; inset: 0; }
 .gw1-gutter { background: var(--warn); width: 3px !important; margin-left: 4px; }
 /* a glycan's SNFG drawing after its string (app.js, glycan drawings); the width comes from the drawing's own rule */
-.glycan { display: inline-block; height: 16px; padding: 1px 3px; margin-left: 4px; vertical-align: -4px; border-radius: 3px;
-  background: #E4E4E4 center / contain no-repeat content-box padding-box; }
+/* longhands only: a `background` shorthand here would out-rank the drawing's own rule and reset its image */
+.glycan { display: inline-block; background-position: center; background-size: contain; background-repeat: no-repeat; }
+.glycan.sticker { height: 20px; margin-left: 1px; }  /* on the baseline of its zero-width space it fills the line exactly */
+.glycan.chip { height: 16px; padding: 1px 3px; margin-left: 4px; vertical-align: -4px; border-radius: 3px;
+  background-color: #E4E4E4; background-origin: content-box; background-clip: padding-box; }
 #empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--fg-dim); background: var(--bg); }
 
 /* console */
@@ -106,6 +112,16 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #console-out .echo { display: block; }
 #console-out .echo .p { color: #606366; }
 #console-out img.plot { display: block; max-width: 100%; height: auto; margin: 4px 0; border-radius: 2px; }
+#console-out .md { margin: 4px 0; font: 14px/1.6 var(--ui); color: #D4D4D4; white-space: normal; word-break: normal; }
+#console-out .md p, #console-out .md ul, #console-out .md ol { margin: 4px 0; }
+#console-out .md ul, #console-out .md ol { padding-left: 22px; }
+#console-out .md h3, #console-out .md h4, #console-out .md h5, #console-out .md h6 { margin: 8px 0 4px; color: #E8E8E8; }
+#console-out .md h3 { font-size: 18px; }
+#console-out .md h4 { font-size: 16px; }
+#console-out .md h5, #console-out .md h6 { font-size: 14px; }
+#console-out .md code { font: 12.5px var(--mono); background: var(--panel); padding: 0 3px; border-radius: 3px; }
+#console-out .md img { vertical-align: middle; max-width: 100%; }
+#console-out .md img.chip { background: #FFF; border-radius: 3px; padding: 1px 3px; }
 #console-input-row { display: flex; align-items: flex-start; border-top: 1px solid #353535; padding: 3px 0 3px 10px; }
 #console-input-row .prompt { font: 13px/19px var(--mono); color: #606366; margin-right: 6px; }
 #console-in { flex: 1; height: 19px; }

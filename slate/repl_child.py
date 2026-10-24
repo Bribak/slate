@@ -4,7 +4,9 @@ for code run from a file in the editor: run_file) on stdin and writes JSON lines
 Output from print() arrives framed as {"o": text} / {"e": text}; anything written straight to the file descriptors
 (subprocesses, C extensions) arrives unframed and the parent shows it as is. Images arrive as {"img": {mime, data, width,
 height}}: matplotlib figures (through the module://slate_inline backend below) and last values that can draw themselves
-the way Jupyter asks them to (_repr_png_, _repr_svg_, _repr_jpeg_), such as glycowork's GlycoDraw drawings.
+the way Jupyter asks them to (_repr_png_, _repr_svg_, _repr_jpeg_), such as glycowork's GlycoDraw drawings. Markdown
+(_repr_markdown_, e.g. IPython's Markdown with GlycoDraw's as_markdown() glycans in its text) arrives as {"md": text}.
+display() works as in Jupyter: it is a builtin, and IPython's own is swapped for it when IPython is imported.
 
 Commands are read on the main thread, and only between runs: on Windows, a read left pending on the stdin pipe from
 a background thread makes DLL loading hang (importing numpy deadlocks). Interrupts therefore come over a localhost
@@ -14,6 +16,7 @@ import _thread
 import ast
 import base64
 import builtins
+import importlib.machinery
 import io
 import json
 import linecache
@@ -113,14 +116,15 @@ def inline_backend():
 
 
 def show_rich(value):
-    """Draw the value if it can show itself as an image (Jupyter's _repr_*_ methods, a matplotlib figure); False otherwise."""
+    """Show the value if it can show itself (Jupyter's _repr_*_ methods, in JupyterLab's order of preference, or a matplotlib
+    figure); False otherwise."""
     pyplot = sys.modules.get('matplotlib.pyplot')
     if hasattr(value, 'savefig') and hasattr(value, 'number') and pyplot is not None and value.number in pyplot.get_fignums():
         return True  # a pyplot figure: shown at the end of the run with the others
     if hasattr(value, 'savefig') and hasattr(value, 'dpi'):
         send_figure(value)
         return True
-    for method, mime in (('_repr_svg_', 'image/svg+xml'), ('_repr_png_', 'image/png'), ('_repr_jpeg_', 'image/jpeg')):
+    for method, mime in (('_repr_markdown_', 'text/markdown'), ('_repr_svg_', 'image/svg+xml'), ('_repr_png_', 'image/png'), ('_repr_jpeg_', 'image/jpeg')):
         fn = getattr(type(value), method, None)  # looked up on the type, as IPython does, so objects answering any attribute (mocks, some proxies) are not taken for images
         if not callable(fn):
             continue
@@ -132,10 +136,44 @@ def show_rich(value):
         meta = {}
         if isinstance(data, tuple):  # (data, {'width': ..., 'height': ...}), as GlycoDraw returns
             data, meta = data[0], data[1] if len(data) > 1 and isinstance(data[1], dict) else {}
+        if data and mime == 'text/markdown':
+            if len(data) > MAX_IMAGE:
+                print(f'(Markdown of {len(data) // 1_000_000} MB not shown)')
+            else:
+                send({'md': data})
+            return True
         if data:
             send_image(mime, data, width = meta.get('width'), height = meta.get('height'))
             return True
     return False
+
+
+def display(*objs, **options):
+    """Jupyter's display(): each object as it would show as a cell's last value, so a cell can show several. The options
+    (include, metadata, display_id, ...) are accepted and ignored."""
+    for obj in objs:
+        if not show_rich(obj):
+            print(repr(obj))
+
+
+class IPythonDisplay:
+    """Swaps display() above in for IPython's when IPython imports the module that defines it, since outside a kernel
+    IPython's only prints each repr. A finder on sys.meta_path, so `from IPython.display import display` already gets it."""
+    NAMES = ('IPython.core.display_functions', 'IPython.core.display')  # IPython 8 and later; before 8
+
+    def find_spec(self, name, path, target = None):
+        if name not in self.NAMES:
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(name, path)
+        if spec is not None and spec.loader is not None and hasattr(spec.loader, 'exec_module'):
+            run_module = spec.loader.exec_module
+
+            def exec_module(module):
+                run_module(module)
+                if callable(vars(module).get('display')):  # not getattr: IPython 8's IPython.core.display warns that its display is deprecated
+                    module.display = display
+            spec.loader.exec_module = exec_module
+        return spec
 
 
 def run(code, filename, ns, first_line = 1):
@@ -198,6 +236,8 @@ def main():
     sys.stdin = open(os.devnull, encoding = 'utf-8')
     sys.stdout, sys.stderr = Framed('o'), Framed('e')
     builtins.input = no_input
+    builtins.display = display  # as in Jupyter, without an import
+    sys.meta_path.insert(0, IPythonDisplay())
     inline_backend()
     ns = {'__name__': '__main__', '__builtins__': builtins}
     busy = threading.Event()

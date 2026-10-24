@@ -230,6 +230,10 @@ class Api:
         """GlycoDraw's drawings of glycans written in the code, from the console's Python (slate/glycans.py)."""
         return self._drawer.draw(list(names), self._state.get('console_python'), list(roots))
 
+    def glycan_full(self, glycan, roots = ()):
+        """{'svg': GlycoDraw's full drawing, with linkages} for the hover, or {'error': message}."""
+        return self._drawer.request({'op': 'full', 'glycan': glycan}, self._state.get('console_python'), list(roots))
+
     def glycan_info(self, glycan, roots = ()):
         """The hover card: canonical form, mass, composition, class and glycowork's motifs (slate/glycan_child.py)."""
         return self._drawer.request({'op': 'info', 'glycan': glycan}, self._state.get('console_python'), list(roots))

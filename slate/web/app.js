@@ -380,7 +380,7 @@ function closeTab(tab, {force = false} = {}) {
 }
 
 function renderTabs() {
-  const bar = $('tabs');
+  const bar = $('tab-strip');
   bar.innerHTML = '';
   const names = {};
   for (const t of S.tabs) names[basename(t.path).toLowerCase()] = (names[basename(t.path).toLowerCase()] || 0) + 1;
@@ -414,7 +414,21 @@ function renderTabs() {
     updateTabEl(tab);
     bar.append(e);
   }
-  if (S.active && S.active.el) S.active.el.scrollIntoView({block: 'nearest'});
+  fitTabs();
+}
+
+// Tabs wrap to two rows at most, as PyCharm's do. With more, the strip gets the width that splits them into two rows most
+// evenly, and #tabs scrolls both rows sideways together (the wheel too).
+function fitTabs() {
+  const strip = $('tab-strip'), tabs = [...strip.children];
+  strip.style.width = '';
+  if (new Set(tabs.map((e) => e.offsetTop)).size > 2) {
+    const widths = tabs.map((e) => e.getBoundingClientRect().width), total = widths.reduce((a, b) => a + b, 0);
+    let first = 0, width = total;
+    for (const w of widths.slice(0, -1)) { first += w; width = Math.min(width, Math.max(first, total - first)); }
+    strip.style.width = Math.ceil(width) + 1 + 'px';
+  }
+  if (S.active && S.active.el) S.active.el.scrollIntoView({block: 'nearest', inline: 'nearest'});
 }
 
 function tabMenu(tab) {
@@ -855,8 +869,8 @@ const TABLE_GLYCAN = /(["'])([A-Za-z0-9[{][A-Za-z0-9?\-()[\]{},.|/]*?)\1|(^|[\s,
 const TABLE_TAB = /\.(csv|tsv|txt)$/i;
 const TABLE_LINE = 10_000;  // Monaco renders no more of a line (stopRenderingLineAfter); glycowork's binding table has a 201,567-character header of glycans
 const TABLE_GLYCANS = 150;  // distinct glycans a table shows at once, nearest the middle of the screen, so they never outnumber GLYCANS_KEPT
-const GLYCANS_KEPT = 300;  // drawings, most recently shown first; each is about 11 KB of data URLs
-const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, colors: null, off: false, noProcess: false, count: 0, cards: new Map()};
+const GLYCANS_KEPT = 300;  // drawings, most recently shown first; each is about 8 KB of data URL
+const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, colors: null, off: false, noProcess: false, count: 0, cards: new Map(), full: new Map()};
 
 // SNFG colours by monosaccharide, as glycowork's GlycoDraw colours them (motif/draw.py sugar_dict), lightened for Darcula's
 // dark background. A residue takes the colour of the longest name it starts with: GlcNAc6S is a GlcNAc, Neu5Ac9Ac a Neu5Ac.
@@ -939,15 +953,30 @@ function glycansOn(model, from, to, middle) {
 const svgUrl = (svg) => 'data:image/svg+xml;base64,' + btoa(Array.from(new TextEncoder().encode(svg), (b) => String.fromCharCode(b)).join(''));
 const viewBox = (svg) => ((svg.match(/viewBox="([^"]+)"/) || [])[1] || '0 0 100 100').split(/[\s,]+/).map(Number);
 
-// The small drawing goes into a style rule of its own, since injected text can only carry a class; the full one is for the hover,
-// on white, because GlycoDraw draws its lines in charcoal on nothing
-function glycanDrawing([small, full]) {
-  const [, , w, h] = viewBox(small), [x, y, fw, fh] = viewBox(full);
-  const cls = 'glycan-' + (++glycans.count);
-  const style = el('style', null, `.${cls} { width: ${Math.max(4, Math.round(16 * w / h))}px; background-image: url("${svgUrl(small)}"); }`);
+// The drawing goes into a style rule of its own, since injected text can only carry a class: GlycoDraw's die-cut sticker,
+// or on a glycowork without stickers (before 1.10.1) a light chip
+function glycanDrawing([svg, sticker]) {
+  const [, , w, h] = viewBox(svg);
+  const cls = 'glycan-' + (++glycans.count), height = sticker ? 20 : 16;
+  const style = el('style', null, `.${cls} { width: ${Math.max(4, Math.round(height * w / h))}px; background-image: url("${svgUrl(svg)}"); }`);
   document.head.append(style);
-  const onWhite = full.replace(/<svg[^>]*>/, (open) => `${open}<rect x="${x}" y="${y}" width="${fw}" height="${fh}" fill="#FFFFFF"/>`);
-  return {cls, style, full: svgUrl(onWhite), size: [fw, fh]};
+  return {cls: (sticker ? 'sticker ' : 'chip ') + cls, style, size: [w, h]};
+}
+
+// The hover's full drawing, with linkages, asked for when a glycan is first hovered: drawing it for every glycan on screen
+// took half the drawing time and 40% of the page's drawing data for hovers that mostly never come. On white, because
+// GlycoDraw draws its lines in charcoal on nothing. Cached per glycan, the newest GLYCANS_KEPT.
+function glycanFull(glycan) {
+  if (!glycans.full.has(glycan)) {
+    glycans.full.set(glycan, api.glycan_full(glycan, S.roots).then((r) => {
+      if (!r || !r.svg) return null;
+      const [x, y, w, h] = viewBox(r.svg);
+      const onWhite = r.svg.replace(/<svg[^>]*>/, (open) => `${open}<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#FFFFFF"/>`);
+      return {url: svgUrl(onWhite), size: [w, h]};
+    }, () => null));
+    for (const g of glycans.full.keys()) { if (glycans.full.size <= GLYCANS_KEPT) break; glycans.full.delete(g); }
+  }
+  return glycans.full.get(glycan);
 }
 
 function drawnGlycan(glycan) {
@@ -1009,12 +1038,15 @@ function setupGlycans(saved) {
       const f = glycans.off || glycans.noProcess ? null : (glycansOn(model, position.lineNumber, position.lineNumber) || []).find((g) => position.column >= g.start && position.column <= g.end);
       const d = f && glycans.drawn.get(f.glycan);
       if (!d) return null;
-      const card = await Promise.race([glycanCard(f.glycan), new Promise((r) => setTimeout(() => r(''), 400))]);
+      // A process busy with a motif search answers late: the hover then shows the sticker, and the card if it came
+      const within = (promise, ms, otherwise) => Promise.race([promise, new Promise((r) => setTimeout(() => r(otherwise), ms))]);
+      const [full, card] = await Promise.all([within(glycanFull(f.glycan), 1000, null), within(glycanCard(f.glycan), 400, '')]);
+      const {url, size} = full || {url: d.style.textContent.match(/url\("([^"]+)"\)/)[1], size: d.size};
       // Monaco caps a hover at a quarter of the editor's height, at least 250 px: a taller drawing pushed the card out of sight
       const room = Math.max(250, editor.getLayoutInfo().height / 4) - (card ? 110 : 16);
-      const scale = Math.min(1, 480 / d.size[0], room / d.size[1]);
+      const scale = Math.min(full ? 1 : 2, 480 / size[0], room / size[1]);
       return {range: new monaco.Range(f.line, f.start, f.line, f.end),
-        contents: [{value: `![SNFG drawing](${d.full}|width=${Math.round(d.size[0] * scale)},height=${Math.round(d.size[1] * scale)})`},
+        contents: [{value: `![SNFG drawing](${url}|width=${Math.round(size[0] * scale)},height=${Math.round(size[1] * scale)})`},
           ...(card ? [{value: card, isTrusted: true}] : [])]};
     },
   };
@@ -1661,9 +1693,30 @@ function appendImage({mime, data, width, height}) {
   img.addEventListener('contextmenu', (ev) => showMenu(ev, [['Copy image', () => copyImage(img)]]));
   out.append(img);
   outLine = null;
-  const images = out.querySelectorAll('img.plot');
-  for (let i = 0; i < images.length - MAX_IMAGES; i++) images[i].replaceWith(el('span', 'sys', '(older figure removed)\n'));
+  keepNewest(out);
   if (atBottom) { out.scrollTop = out.scrollHeight; img.addEventListener('load', () => { out.scrollTop = out.scrollHeight; }, {once: true}); }
+}
+
+// Markdown from the console (_repr_markdown_, e.g. IPython's Markdown), with the glycans GlycoDraw's as_markdown() puts in its
+// text. It counts as one figure towards MAX_IMAGES.
+function appendMarkdown(md) {
+  const out = $('console-out');
+  const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 30;
+  const box = el('div', 'md');
+  box.innerHTML = markdownHtml(md, true);
+  for (const img of box.querySelectorAll('img')) {
+    img.addEventListener('contextmenu', (ev) => showMenu(ev, [['Copy image', () => copyImage(img)]]));
+    if (atBottom) img.addEventListener('load', () => { out.scrollTop = out.scrollHeight; }, {once: true});
+  }
+  out.append(box);
+  outLine = null;
+  keepNewest(out);
+  if (atBottom) out.scrollTop = out.scrollHeight;
+}
+
+function keepNewest(out) {
+  const shown = out.querySelectorAll('img.plot, div.md');
+  for (let i = 0; i < shown.length - MAX_IMAGES; i++) shown[i].replaceWith(el('span', 'sys', shown[i].tagName === 'IMG' ? '(older figure removed)\n' : '(older output removed)\n'));
 }
 
 async function copyImage(img) {
@@ -1686,6 +1739,7 @@ window.slate = {
     for (const [kind, payload] of batch) {
       if (kind === 'o' || kind === 'e') appendOut(payload, kind);
       else if (kind === 'img') appendImage(payload);
+      else if (kind === 'md') appendMarkdown(payload);
       else if (kind === 'ready') { appendOut(`Python ${payload} · variables persist until Restart · Enter runs, Shift+Enter adds a line\n`, 'sys'); nameConsole(payload); }
       else if (kind === 'sys') appendOut(payload + '\n', 'sys');
       else if (kind === 'done') consoleBusy = Math.max(0, consoleBusy - 1);
@@ -1953,18 +2007,30 @@ async function openSettings() {
   addEventListener('mousedown', outside, true);
 }
 
-// CHANGELOG.md's few kinds of lines (headings, bullets, paragraphs, `code`, **bold**) as HTML. Links stay text: following one would
-// take the window away from slate.
-function markdownHtml(md) {
-  const inline = (s) => escapeHtml(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
-  const blocks = md.trim().split(/\n\s*\n/);
-  return blocks.map((block) => {
-    const heading = block.match(/^(#{1,4}) (.*)/);
-    if (heading) return `<h${heading[1].length + 2}>${inline(heading[2])}</h${heading[1].length + 2}>`;
-    if (/^[-*] /.test(block)) return `<ul>${block.split(/\n(?=[-*] )/).map((item) => `<li>${inline(item.slice(2))}</li>`).join('')}</ul>`;
-    return `<p>${inline(block)}</p>`;
-  }).join('');
+// Markdown's common lines (headings, bullets, numbered lists, paragraphs, `code`, **bold**, *italics*) as HTML: CHANGELOG.md, and
+// with `images` the console's Markdown, where an <img> with an image data URL (GlycoDraw's as_markdown) is kept. Everything else
+// is escaped, and links stay text: following one would take the window away from slate.
+function markdownHtml(md, images = false) {
+  const kept = [];
+  const keep = (html) => `\u0000${kept.push(html) - 1}\u0000`;
+  if (images) md = md.replace(/<img\s[^>]*>/gi, (tag) => {
+    const src = tag.match(/\ssrc="(data:image\/(svg\+xml|png|jpeg);base64,([A-Za-z0-9+/=]+))"/i);
+    if (!src) return tag;
+    const height = tag.match(/\sheight="(\d+(?:\.\d+)?)"/i), alt = tag.match(/\salt="([^"]*)"/i);
+    let sticker = false;  // GlycoDraw(sticker = True) brings its own white outline; other drawings get a white chip, since GlycoDraw draws charcoal on nothing
+    try { sticker = src[2] === 'svg+xml' && atob(src[3]).includes('feDropShadow'); } catch (e) { }
+    return keep(`<img class="${sticker ? 'sticker' : 'chip'}" src="${src[1]}" alt="${escapeHtml(alt ? alt[1] : '')}"${height ? ` style="height: ${height[1]}px"` : ''}>`);
+  });
+  const inline = (s) => escapeHtml(s.replace(/`([^`]+)`/g, (m, code) => keep(`<code>${escapeHtml(code)}</code>`)))
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\*([^*\s][^*]*)\*/g, '<i>$1</i>').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+  const block = (b) => {
+    const heading = b.match(/^(#{1,4}) (.*)(?:\n([\s\S]*))?/);
+    if (heading) return `<h${heading[1].length + 2}>${inline(heading[2])}</h${heading[1].length + 2}>${heading[3] ? block(heading[3]) : ''}`;
+    if (/^[-*] /.test(b)) return `<ul>${b.split(/\n(?=[-*] )/).map((item) => `<li>${inline(item.slice(2))}</li>`).join('')}</ul>`;
+    if (/^\d+\. /.test(b)) return `<ol>${b.split(/\n(?=\d+\. )/).map((item) => `<li>${inline(item.replace(/^\d+\. /, ''))}</li>`).join('')}</ol>`;
+    return `<p>${inline(b)}</p>`;
+  };
+  return md.trim().split(/\n\s*\n/).map(block).join('').replace(/\u0000(\d+)\u0000/g, (m, i) => kept[i]);
 }
 
 // What changed, in an overlay like the settings panel, with `actions` ([label, fn]) next to Close.
@@ -2233,6 +2299,13 @@ function bindUi() {
   addEventListener('mousedown', (e) => { if (!$('menu').contains(e.target)) hideMenu(); });
   $('finder-input').addEventListener('input', renderFinder);
   $('finder').addEventListener('focusout', (e) => { if (!$('finder').contains(e.relatedTarget)) setTimeout(() => { if (!$('finder').contains(document.activeElement)) $('finder').classList.add('hidden'); }, 100); });
+  $('tabs').addEventListener('wheel', (e) => {
+    if (e.deltaX || $('tabs').scrollWidth <= $('tabs').clientWidth) return;
+    e.preventDefault();
+    $('tabs').scrollLeft += e.deltaY;
+  }, {passive: false});
+  let tabsWidth = 0;
+  new ResizeObserver(() => { if ($('tabs').clientWidth !== tabsWidth) { tabsWidth = $('tabs').clientWidth; fitTabs(); } }).observe($('tabs'));
   $('add-root').onclick = addRoot;
   for (const b of document.querySelectorAll('#side-tabs button')) b.onclick = () => showView(b.dataset.view);
   const searchSoon = debounce(runSearch, 350);

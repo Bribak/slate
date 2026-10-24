@@ -6,6 +6,11 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- Tabs wrap onto two rows at most; with more, both rows scroll sideways (the mouse wheel scrolls them too), as in PyCharm.
+- The drawings next to glycans are GlycoDraw's die-cut stickers instead of drawings on a grey box (glycowork 1.10.1 or newer; older versions keep the box).
+- Glycans on screen are drawn in about half the time: the larger drawing with linkages is made when you first hover over a glycan.
+- The console shows Markdown as Jupyter does, glycans in the text included: `Markdown(f'binds {GlycoDraw(g).as_markdown()}')` from `IPython.display` (glycowork 1.11.1). `display()` shows several things from one cell, as in Jupyter.
+
 ## 0.1.2 (2026-10-24)
 
 - Updates install a tested release: a new version is released only after slate passed its tests on Windows and macOS, so an update never brings work in progress.

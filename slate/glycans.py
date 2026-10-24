@@ -51,7 +51,7 @@ class Drawer:
         self._checked = {}  # {glycan: check result}, so each glycan is canonicalized once per session
 
     def draw(self, glycans, python = None, paths = ()):
-        """{glycan: [small svg, full svg] or None}, or {'error': message} when glycowork cannot be imported."""
+        """{glycan: [svg, sticker] or None}, or {'error': message} when glycowork cannot be imported."""
         return self.request(list(glycans), python, paths)
 
     def request(self, msg, python = None, paths = ()):
