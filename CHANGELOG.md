@@ -6,6 +6,8 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+## 0.1.3 (2026-10-24)
+
 - Tabs wrap onto two rows at most; with more, both rows scroll sideways (the mouse wheel scrolls them too), as in PyCharm.
 - The drawings next to glycans are GlycoDraw's die-cut stickers instead of drawings on a grey box (glycowork 1.10.1 or newer; older versions keep the box).
 - Glycans on screen are drawn in about half the time: the larger drawing with linkages is made when you first hover over a glycan.

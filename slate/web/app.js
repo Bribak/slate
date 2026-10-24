@@ -380,7 +380,7 @@ function closeTab(tab, {force = false} = {}) {
 }
 
 function renderTabs() {
-  const bar = $('tab-strip');
+  const bar = $('tab-strip'), left = $('tabs').scrollLeft;
   bar.innerHTML = '';
   const names = {};
   for (const t of S.tabs) names[basename(t.path).toLowerCase()] = (names[basename(t.path).toLowerCase()] || 0) + 1;
@@ -414,12 +414,14 @@ function renderTabs() {
     updateTabEl(tab);
     bar.append(e);
   }
-  fitTabs();
+  fitTabs(left);
 }
 
 // Tabs wrap to two rows at most, as PyCharm's do. With more, the strip gets the width that splits them into two rows most
-// evenly, and #tabs scrolls both rows sideways together (the wheel too).
-function fitTabs() {
+// evenly, and #tabs scrolls both rows sideways together (the wheel too). Opening or closing a tab keeps the strip where it
+// was (rebuilding it reset the scroll); it moves only to bring a newly fronted tab into view, or after a resize.
+let tabInView = null;
+function fitTabs(left = $('tabs').scrollLeft, reveal = false) {
   const strip = $('tab-strip'), tabs = [...strip.children];
   strip.style.width = '';
   if (new Set(tabs.map((e) => e.offsetTop)).size > 2) {
@@ -428,7 +430,9 @@ function fitTabs() {
     for (const w of widths.slice(0, -1)) { first += w; width = Math.min(width, Math.max(first, total - first)); }
     strip.style.width = Math.ceil(width) + 1 + 'px';
   }
-  if (S.active && S.active.el) S.active.el.scrollIntoView({block: 'nearest', inline: 'nearest'});
+  $('tabs').scrollLeft = left;
+  if (S.active && S.active.el && (reveal || S.active !== tabInView)) S.active.el.scrollIntoView({block: 'nearest', inline: 'nearest'});
+  tabInView = S.active;
 }
 
 function tabMenu(tab) {
@@ -2305,7 +2309,7 @@ function bindUi() {
     $('tabs').scrollLeft += e.deltaY;
   }, {passive: false});
   let tabsWidth = 0;
-  new ResizeObserver(() => { if ($('tabs').clientWidth !== tabsWidth) { tabsWidth = $('tabs').clientWidth; fitTabs(); } }).observe($('tabs'));
+  new ResizeObserver(() => { if ($('tabs').clientWidth !== tabsWidth) { tabsWidth = $('tabs').clientWidth; fitTabs(undefined, true); } }).observe($('tabs'));
   $('add-root').onclick = addRoot;
   for (const b of document.querySelectorAll('#side-tabs button')) b.onclick = () => showView(b.dataset.view);
   const searchSoon = debounce(runSearch, 350);
