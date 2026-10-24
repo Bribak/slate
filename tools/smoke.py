@@ -40,8 +40,11 @@ results, failed = {'platform': sys.platform}, []
 def js(window, code, wait = 60):
     done, box = threading.Event(), {}
     # pywebview calls back only for promises; a plain value never arrives. A promise of undefined loses its `params` in
-    # pywebview's JSON, and on macOS its handler then raises KeyError and aborts the app, so undefined goes back as null
-    code = f'(async () => ({code.strip()}))().then((v) => v === undefined ? null : v)'
+    # pywebview's JSON, and on macOS its handler then raises KeyError and aborts the app, so undefined goes back as null.
+    # A rejection goes back as {'error'}: pywebview sends its reason the same way, and ff10c88's find check aborted the
+    # macOS run, presumably with a probe that rejected only there
+    code = (f'(async () => ({code.strip()}))().then((v) => v === undefined ? null : v, '
+            "(e) => ({error: String(e && e.stack || e)}))")
     threading.Thread(target = window.evaluate_js, args = (code,), kwargs = {'callback': lambda r: (box.update(r = r), done.set())}, daemon = True).start()
     done.wait(wait)
     return box.get('r')
