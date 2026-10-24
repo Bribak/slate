@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from slate import state, workspace
+from slate import heap, state, workspace
 
 RESCAN = 10  # seconds between checks of a folder's file times
 MAX_DOC = 1500
@@ -191,7 +191,8 @@ def _scan(roots, libraries = None):
                 continue
             try:
                 source = f.read_text(encoding = 'utf-8')
-                found = definitions(ast.parse(source), source.splitlines())[0]
+                with heap.paused():
+                    found = definitions(ast.parse(source), source.splitlines())[0]
             except (OSError, ValueError, SyntaxError):
                 found = {}
             _files[key] = [mtime, module_of(f, root), found]

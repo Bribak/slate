@@ -16,7 +16,7 @@ import time
 from collections import OrderedDict, namedtuple
 from pathlib import Path
 
-from slate import hints
+from slate import heap, hints
 
 JEDI_LIMIT = 3  # seconds: of 16 jedi lookups in prediction.py and draw.py that took longer (unlimited), 2 found something
 SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
@@ -48,7 +48,9 @@ class Superseded(BaseException):
 
 class File:
     def __init__(self, path, source):
-        self.path, self.source, self.tree = path, source, ast.parse(source)
+        with heap.paused():  # a big module's tree, which the collector would otherwise walk again and again as it grows (heap.py)
+            self.tree = ast.parse(source)
+        self.path, self.source = path, source
         self.lines = source.split('\n')
         self.scopes = {}  # {id(scope node): {name: [Binding]}}
 
@@ -547,7 +549,8 @@ def goto(path, source, line, col, roots, libraries = None):
                 _current = File(path, source)
             except (SyntaxError, ValueError):
                 _current = None  # being typed: jedi's parser copes
-        found = find(_current, (line, len(text[:word.start()].encode('utf-8'))), roots) if _current is not None else None
+        with heap.paused():
+            found = find(_current, (line, len(text[:word.start()].encode('utf-8'))), roots) if _current is not None else None
         if found is None:
             try:
                 found = with_jedi(path, source, line, word.start(), roots, ticket)
@@ -568,7 +571,8 @@ def outline(source):
     or None when the text does not parse (the page then keeps the last one). Defs under if, try or with count as the
     level they sit in: glycowork defines fallbacks inside try/except ImportError."""
     try:
-        tree = ast.parse(source)
+        with heap.paused():
+            tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return None
 

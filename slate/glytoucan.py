@@ -8,7 +8,6 @@ glycowork's files the way glytoucan_to_glycan combines them, without importing g
 """
 import hashlib
 import json
-import lzma
 import os
 import re
 import subprocess
@@ -44,6 +43,7 @@ def sources(folder):
 
 
 def read_json(path):
+    import lzma  # only the index build, in its own process, reads glycowork's .xz files
     with (lzma.open if str(path).endswith('.xz') else open)(path, 'rt', encoding = 'utf-8') as f:
         return json.load(f)
 

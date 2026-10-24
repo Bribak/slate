@@ -43,7 +43,8 @@ slate's figures, measured on a 250% laptop screen with eight files and the conso
 
 * about 430 MB of RAM while you work, about 350 MB while another app is in front (PyCharm: 4.5 GB);
 * 22 ms from keystroke to screen and 11 ms per scroll frame, the display's own frame time;
-* a double-clicked file on screen in 2.2-2.4 s, and in 255 ms when slate is already open.
+* style squiggles 0.3 s after you stop typing plus the check itself: about 0.2 s for a 2,400-line file, under 0.5 s for CandyCrunch's 5,400-line prediction.py;
+* a double-clicked file on screen in about 1.8 s, and in 255 ms when slate is already open.
 
 Every new feature is measured against these before it goes in (see Development), and anything heavy, such as the glycan drawing process, starts only when it is needed and stops when it is not.
 

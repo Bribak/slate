@@ -14,9 +14,6 @@ import json
 import re
 import subprocess
 import sys
-import urllib.error
-import urllib.request
-from importlib import metadata
 
 from slate import __version__
 from slate.system import NO_WINDOW, console_python, installer
@@ -29,6 +26,7 @@ SECTION = re.compile(r'^## (\d+(?:\.\d+)*).*$', re.M)  # CHANGELOG.md: one per v
 
 def origin():
     """{'repo': 'owner/name', 'git': whether pip cloned it} when slate was installed from GitHub, else None."""
+    from importlib import metadata  # here, not at the top: with urllib below, 20 ms of every start and of every hand-off to an open slate
     try:
         info = json.loads(metadata.distribution('slate').read_text('direct_url.json') or 'null')
     except (metadata.PackageNotFoundError, ValueError):
@@ -56,6 +54,8 @@ def parts(version):
 def fetch(url):
     """The text at `url`, None for a 404; raises OSError when offline or GitHub refuses (60 API calls an hour per address
     without a token)."""
+    import urllib.error
+    import urllib.request
     ask = urllib.request.Request(url, headers = {'Accept': 'application/vnd.github+json'})
     try:
         with urllib.request.urlopen(ask, timeout = 10) as reply:

@@ -9,9 +9,6 @@ asks again. Off with "reference_lookup": false.
 import json
 import re
 import threading
-import urllib.error
-import urllib.parse
-import urllib.request
 
 from slate import state
 
@@ -32,6 +29,7 @@ def cache_file():
 
 
 def fetch(url, accept = 'application/json'):
+    import urllib.request  # here, not at the top: urllib cost 32 ms of every start for a lookup made on hover
     request = urllib.request.Request(url, headers = {'User-Agent': AGENT, 'Accept': accept})
     with urllib.request.urlopen(request, timeout = TIMEOUT) as r:
         return json.loads(r.read().decode('utf-8'))
@@ -47,6 +45,8 @@ def pubmed(pmid):
 
 
 def doi_org(doi):
+    import urllib.error
+    import urllib.parse
     try:
         doc = fetch(DOI_ORG + urllib.parse.quote(doi, safe = '/'), accept = 'application/vnd.citationstyles.csl+json')
     except urllib.error.HTTPError as e:

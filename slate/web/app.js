@@ -644,7 +644,7 @@ function renderBanner() {
 
 // ---------------------------------------------------------------- style, formatting, go-to-definition
 
-function lintSoon(tab, delay = 400) {
+function lintSoon(tab, delay = 300) {  // PyCharm's autoreparse delay; lints run on a bridge thread, so typing never waits for one
   clearTimeout(tab.lintTimer);
   tab.lintTimer = setTimeout(() => lint(tab), delay);
 }

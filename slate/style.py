@@ -12,7 +12,7 @@ import tokenize
 import warnings
 from pathlib import Path
 
-from slate import glycans, hints, state
+from slate import glycans, heap, hints, state
 
 DEFAULT_SCRIPT = Path.home() / 'Documents' / 'glycowork' / '.github' / 'scripts' / 'check_style.py'
 _modules, _signatures = {}, {}
@@ -108,7 +108,7 @@ def saved(path):
 
 
 def lint(path, source, fallback = None, glycan_check = True):
-    with _lock:
+    with _lock, heap.paused():  # 30% of a big file's lint was the garbage collector walking the new tree again and again (heap.py)
         return _lint(path, source, fallback, glycan_check = glycan_check)
 
 
@@ -157,7 +157,7 @@ def _lint(path, source, fallback, glycan_check = True):
 
 
 def format_source(path, source, fallback = None):
-    with _lock:
+    with _lock, heap.paused():
         return _format(path, source, fallback)
 
 

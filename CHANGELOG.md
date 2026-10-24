@@ -6,6 +6,9 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- Style checks of large files are up to a third faster (CandyCrunch's prediction.py: 0.66 s → 0.43 s), and squiggles start 0.3 s after you stop typing instead of 0.4 s, as in PyCharm.
+- Find in files is 20-50% faster for plain text: a search of glycowork and CandyCrunch that finds nothing takes 0.16 s instead of 0.29 s.
+- slate starts about 50 ms sooner, and hands a double-clicked file to an open slate about 50 ms sooner.
 - The session comes back faster at startup: the saved tabs are read while the window is still setting up (about 0.4 s sooner for eight tabs).
 - Diff views (such as the Changes extension's) no longer have Python parse both files three times each in the background.
 - The table view keeps the glycan column to about a third of the width, so the sample columns stay in view next to an open row.

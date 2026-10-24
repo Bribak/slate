@@ -114,6 +114,13 @@ def search(roots, query, regex = False, case = False):
         pattern = re.compile(query if regex else re.escape(query), 0 if case else re.IGNORECASE)
     except re.error as e:
         raise ValueError(f'bad regex: {e}')
+    # Most files hold no match, so each is first asked whether it holds one at all. A search of glycowork, CandyCrunch and
+    # slate (429 files, 20 MB) spent 105 ms in the case-insensitive regex alone. For a plain query in an ASCII file, a byte
+    # search (on lowercased bytes when case does not matter) answers that exactly, and spares the file's decoding; files with
+    # other characters keep the regex, whose Unicode case rules match more (the Kelvin sign as a k). A regex is asked of the
+    # whole text, where a match in a line is one too, unless anchors or lookarounds see the line breaks: those check every line.
+    needle = None if regex or not query.isascii() else query.encode('ascii') if case else query.lower().encode('ascii')
+    whole = not regex or not re.search(r'[\^$]|\\[AZ]|\(\?<?[=!]', query)
     matches, files = [], 0
     for i, rel in walk_files(roots):
         path = os.path.join(roots[i], rel)
@@ -128,7 +135,14 @@ def search(roots, query, regex = False, case = False):
             continue
         if b'\0' in data[:8192]:
             continue
-        text = data.decode('utf-8', errors = 'replace')
+        if needle is not None and data.isascii():
+            if needle not in (data if case else data.lower()):
+                continue
+            text = data.decode('ascii')
+        else:
+            text = data.decode('utf-8', errors = 'replace')
+            if whole and not pattern.search(text):
+                continue
         hit = False
         for ln, line in enumerate(text.splitlines(), 1):
             for m in pattern.finditer(line):
