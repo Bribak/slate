@@ -157,7 +157,10 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 .settings-row input[type=checkbox] { margin: 0 2px 0 0; accent-color: var(--accent); }
 .settings-note { color: var(--fg-dim); font-size: 12px; padding: 4px 0; }
 .settings-row .settings-note { flex-basis: 100%; padding: 0 0 2px 22px; }
-.settings-label ~ .settings-note { padding-left: 128px; }  /* under a labelled control, not under a checkbox's text: the label's 120 px and the gap */
+.settings-label ~ .settings-note { padding-left: 128px; }
+.keys-group { margin: 10px 0 3px; color: var(--fg-dim); font-size: 12px; }
+.keys-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+.keys-combos { width: 230px; flex: none; display: flex; flex-wrap: wrap; gap: 4px; }  /* under a labelled control, not under a checkbox's text: the label's 120 px and the gap */
 select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 3px 4px; outline: none; }
 select:focus { border-color: var(--accent); }
 #settings-restart { margin-top: 2px; border-color: var(--border); }

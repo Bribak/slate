@@ -105,12 +105,14 @@ Run `python -m slate --install` again after upgrading or moving Python. `python 
 
 On macOS, Cmd takes Ctrl's place, as in VS Code: Cmd+P, Cmd+S, Cmd+Enter. Ctrl+\`, Ctrl+Tab and Ctrl+C (interrupt) keep the Ctrl key. Cmd+, also opens the settings, Ctrl+R also runs the file (F5 needs Fn on most Mac keyboards), and Cmd+Option+Left/Right switch tabs. Back and forward are Ctrl+- and Ctrl+Shift+-, as in a Mac's VS Code. Alt is Option.
 
+The settings panel (Ctrl+Alt+S) lists them too, with a Mac's keys on a Mac.
+
 | Key | Action |
 | --- | --- |
 | Ctrl+P / Ctrl+E | open file by name |
 | Ctrl+Shift+F | find in files |
 | Ctrl+Shift+E | folder tree |
-| Alt+Shift+L | show the current file in the tree |
+| Shift+Alt+L | show the current file in the tree |
 | Ctrl+B | show/hide the sidebar |
 | Ctrl+\` | show/hide the console |
 | Ctrl+S | save |
@@ -121,13 +123,26 @@ On macOS, Cmd takes Ctrl's place, as in VS Code: Cmd+P, Cmd+S, Cmd+Enter. Ctrl+\
 | Ctrl+Enter / Alt+Shift+E | run the selection, cell or statement in the console |
 | Shift+Enter | the same, then go on to the next cell or statement |
 | F5 / Shift+F10 | run the file in the console |
-| Ctrl+Alt+S | settings |
+| Ctrl+Alt+S | settings, with all keys |
 | Shift+Alt+F | reformat to the coding standard |
+| Ctrl+F / Ctrl+H | find / replace in the file |
 | F12 / Ctrl+click | go to definition |
 | Ctrl+Alt+Left / Ctrl+Alt+Right | back / forward (also Alt+Left / Alt+Right and the mouse's buttons) |
 | Ctrl+F12 | file structure: the file's classes and functions |
 | Ctrl+Shift+Backspace | last edit location (press again for the one before) |
 | F8 | next style finding |
+
+In the console:
+
+| Key | Action |
+| --- | --- |
+| Enter | run what was typed (a new line while a block is open) |
+| Shift+Enter | new line |
+| Ctrl+Enter | run, even an unfinished block |
+| Up / Down | earlier / later input |
+| Ctrl+C | interrupt (with nothing selected) |
+| Ctrl+L | clear |
+| Escape | back to the editor |
 
 Everything else follows VS Code's keys.
 

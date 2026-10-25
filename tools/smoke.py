@@ -1,7 +1,7 @@
 """Check that slate works in a real window, on Windows and macOS: the page, the bridge, linting, the console, running a
-cell, a traceback link, Markdown output with an inline image, the settings panel, a key, find after a diff view, a second
-launch handing over a file, renaming a file (and moving one to the Trash on macOS), tables, local history and the last
-edit location.
+cell, a traceback link, Markdown output with an inline image, the settings panel and its keys, a key, find after a diff
+view, a second launch handing over a file, renaming a file (and moving one to the Trash on macOS), tables, local history
+and the last edit location.
 
 python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
 
@@ -102,6 +102,9 @@ def run(window):
     js(window, f"(consoleInput.setValue({json.dumps(markdown)}), submitConsole(), 1)")
     check('Markdown output with its image', until(window, "(document.querySelector('#console-out div.md b') && document.querySelector('#console-out div.md img.chip') || {}).naturalWidth"), expect = 10)
     check('settings panel lists Pythons', until(window, "openSettings().then(() => document.querySelectorAll('#settings select option').length)"))
+    keys = "[...document.querySelectorAll('#settings .keys-row')].map((r) => r.textContent)"
+    check('settings panel lists the keys', js(window, f"(rows => rows.length > 25 && rows.find((r) => r.includes('find in files')).split('find')[0])({keys})"),
+          expect = '⌘⇧F' if MAC else 'Ctrl+Shift+F')
     js(window, "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})) || 1")
     key = "{key: 'p', code: 'KeyP', metaKey: true, bubbles: true}" if MAC else "{key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true}"
     js(window, f"window.dispatchEvent(new KeyboardEvent('keydown', {key})) || 1")

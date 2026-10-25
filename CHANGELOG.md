@@ -7,6 +7,8 @@ under `## Unreleased`; the version bump renames it.
 ## Unreleased
 
 - Moving the mouse into the editor no longer blanks it for a moment in a large window on a high-DPI screen: slate now gives the graphics card enough memory for the whole editor, and makes up for it elsewhere, so it uses slightly less memory than before.
+- Settings (Ctrl+Alt+S) now lists all of slate's keys, with a Mac's keys on a Mac; the empty editor points there.
+- Shift+Alt+L (show the current file in the tree) now also works when the tree or the console has the focus, not only the editor.
 - The fold arrows in the gutter and the divider between sidebar and editor show only when the mouse rests there (or drags the divider), not when it passes over them.
 
 ## 0.1.5 (2026-10-24)

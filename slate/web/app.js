@@ -2608,6 +2608,9 @@ async function openSettings() {
     'asks PubMed or doi.org, sending only the identifier');
   body.append(el('div', 'settings-note', `slate ${info.version} · Python ${S.python} · settings are kept in ${info.state_file}`));
 
+  section('Keys');
+  keysSection(body);
+
   document.body.append(box);
   const close = () => { box.remove(); removeEventListener('keydown', esc, true); removeEventListener('mousedown', outside, true); if (S.active) editor.focus(); };
   const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
@@ -2869,30 +2872,80 @@ function macLabels() {
   }
 }
 
+// slate's keys, as Settings lists them (keysSection). Each row's `keys` are comboOf's combos, `mac` replaces them on a Mac
+// (where Cmd stands in for Ctrl and 'macctrl' is the Ctrl key itself, kept where a Mac's VS Code and PyCharm keep it), and
+// `macAlso` binds more there without listing them. A combo with a function is slate's own and bindUi binds it; one without
+// belongs to Monaco or the console and is only listed. README.md's Keys table follows this list.
+const KEYS = [
+  'Files and tabs',
+  {what: 'open a file by name', keys: {'ctrl+p': () => openFinder(), 'ctrl+e': () => openFinder()}},
+  {what: 'find in files', keys: {'ctrl+shift+f': () => showView('search')}},
+  {what: 'folder tree', keys: {'ctrl+shift+e': () => showView('files')}},
+  {what: 'show the current file in the tree', keys: {'shift+alt+l': () => revealActiveInTree()}},
+  {what: 'show or hide the sidebar', keys: {'ctrl+b': () => { S.sidebarOpen = !S.sidebarOpen; layout(); persist(); }}},
+  {what: 'save', keys: {'ctrl+s': () => save()}},
+  {what: 'close the tab', keys: {'ctrl+w': () => closeTab(S.active), 'ctrl+f4': () => closeTab(S.active)}, mac: {'ctrl+w': () => closeTab(S.active)}},
+  {what: 'reopen a closed tab', keys: {'ctrl+shift+t': () => { const p = S.closed.pop(); if (p) { openFile(p); persist(); } }}},
+  {what: 'previous tab (press Tab again, still holding Ctrl, to go further back)', keys: {'ctrl+tab': () => mruStep(1), 'ctrl+shift+tab': () => mruStep(-1)},
+    mac: {'macctrl+tab': () => mruStep(1), 'macctrl+shift+tab': () => mruStep(-1)}},
+  {what: 'tab to the left / right', keys: {'ctrl+pageup': () => cycleTab(-1), 'ctrl+pagedown': () => cycleTab(1)},
+    mac: {'ctrl+pageup': () => cycleTab(-1), 'ctrl+pagedown': () => cycleTab(1), 'ctrl+alt+arrowleft': () => cycleTab(-1), 'ctrl+alt+arrowright': () => cycleTab(1)}},
+  'Code',
+  {what: 'run the selection, cell or statement in the console', keys: {'ctrl+enter': null, 'shift+alt+e': null}},
+  {what: 'the same, then go on to the next cell or statement', keys: {'shift+enter': null}},
+  {what: 'run the file in the console', keys: {'f5': () => runFile(), 'shift+f10': () => runFile()},  // F5 also no longer reloads the page
+    mac: {'f5': () => runFile(), 'shift+f10': () => runFile(), 'macctrl+r': () => runFile()}},
+  {what: 'show or hide the console', keys: {'ctrl+`': () => toggleConsole()}, mac: {'macctrl+`': () => toggleConsole()}},
+  {what: 'reformat to the coding standard', keys: {'shift+alt+f': null}},
+  {what: 'next style finding', keys: {'f8': null}},
+  {what: 'find / replace in the file', keys: {'ctrl+f': null, 'ctrl+h': null}, mac: {'ctrl+f': null, 'ctrl+alt+f': null}},  // bindUi's `find`
+  'Moving around',
+  {what: 'go to definition', keys: {'f12': null, 'ctrl+click': null}},
+  {what: "back / forward (also the mouse's side buttons)", keys: {'ctrl+alt+arrowleft': () => goPlace(-1), 'ctrl+alt+arrowright': () => goPlace(1),  // PyCharm's
+    'alt+arrowleft': () => goPlace(-1), 'alt+arrowright': () => goPlace(1)},  // VS Code's
+    mac: {'macctrl+-': () => goPlace(-1), 'macctrl+shift+-': () => goPlace(1)}, macAlso: {'macctrl+shift+_': () => goPlace(1)}},  // a Mac's VS Code; Option+arrows move by word there
+  {what: 'file structure: the classes and functions', keys: {'ctrl+f12': () => fileStructure()}},  // PyCharm's
+  {what: 'last edit location (again for the one before)', keys: {'ctrl+shift+backspace': () => lastEdit()}},  // PyCharm's
+  'Console',
+  {what: 'run what was typed (a new line while a block is open)', keys: {'enter': null}},
+  {what: 'new line', keys: {'shift+enter': null}},
+  {what: 'run, even an unfinished block', keys: {'ctrl+enter': null}},
+  {what: 'earlier / later input', keys: {'arrowup': null, 'arrowdown': null}},
+  {what: 'interrupt (with nothing selected)', keys: {'ctrl+c': null}, mac: {'macctrl+c': null, 'ctrl+c': null}},
+  {what: 'clear', keys: {'ctrl+l': null}},
+  {what: 'back to the editor', keys: {'escape': null}},
+  'slate',
+  {what: 'settings, with this list', keys: {'ctrl+alt+s': () => openSettings()}, mac: {'ctrl+alt+s': () => openSettings(), 'ctrl+,': () => openSettings()}},  // PyCharm's; a Mac's own
+];
+const KEY_NAMES = {arrowleft: 'Left', arrowright: 'Right', arrowup: 'Up', arrowdown: 'Down', pageup: 'PageUp', pagedown: 'PageDown', backspace: 'Backspace',
+                   enter: 'Enter', escape: 'Escape', tab: 'Tab', click: 'click'};
+
+// 'ctrl+shift+f' as Ctrl+Shift+F, on a Mac as ⌘⇧F ('macctrl' is ⌃)
+function keyLabel(combo) {
+  const parts = combo.split('+'), key = parts.pop();
+  const name = KEY_NAMES[key] || key.toUpperCase();
+  if (S.mac) return parts.map((p) => ({macctrl: '⌃', ctrl: '⌘', alt: '⌥', shift: '⇧'})[p]).join('') + name;
+  return [...parts.map((p) => p[0].toUpperCase() + p.slice(1)), name].join('+');
+}
+
+const keysOf = (row) => (S.mac && row.mac) || row.keys;
+
+function keysSection(body) {
+  for (const row of KEYS) {
+    if (typeof row === 'string') { body.append(el('div', 'keys-group', row)); continue; }
+    const line = el('div', 'keys-row'), combos = el('span', 'keys-combos');
+    Object.keys(keysOf(row)).forEach((combo, i) => { if (i) combos.append(' '); combos.append(el('kbd', null, keyLabel(combo))); });
+    line.append(combos, el('span', null, row.what));
+    body.append(line);
+  }
+  body.append(el('div', 'settings-note', "Everything else follows VS Code's keys."));
+}
+
 function bindUi() {
-  const keys = {
-    'ctrl+p': openFinder, 'ctrl+e': openFinder,
-    'ctrl+shift+f': () => showView('search'), 'ctrl+shift+e': () => showView('files'),
-    'ctrl+b': () => { S.sidebarOpen = !S.sidebarOpen; layout(); persist(); },
-    'ctrl+`': () => toggleConsole(), 'ctrl+s': () => save(), 'ctrl+w': () => closeTab(S.active), 'ctrl+f4': () => closeTab(S.active),
-    'ctrl+shift+t': () => { const p = S.closed.pop(); if (p) { openFile(p); persist(); } },
-    'ctrl+tab': () => mruStep(1), 'ctrl+shift+tab': () => mruStep(-1),
-    'ctrl+pagedown': () => cycleTab(1), 'ctrl+pageup': () => cycleTab(-1),
-    'alt+shift+l': revealActiveInTree,
-    'f5': runFile, 'shift+f10': runFile,  // F5 also no longer reloads the page
-    'ctrl+alt+s': openSettings,  // PyCharm's
-    'ctrl+alt+arrowleft': () => goPlace(-1), 'ctrl+alt+arrowright': () => goPlace(1),  // PyCharm's back and forward
-    'alt+arrowleft': () => goPlace(-1), 'alt+arrowright': () => goPlace(1),  // VS Code's
-    'ctrl+f12': fileStructure,  // PyCharm's file structure popup
-    'ctrl+shift+backspace': lastEdit,  // PyCharm's last edit location
-  };
-  if (S.mac) {  // Cmd stands in for Ctrl (comboOf), except where a Mac's VS Code and PyCharm keep the Ctrl key itself
-    for (const k of ['ctrl+tab', 'ctrl+shift+tab', 'ctrl+`']) { keys['mac' + k] = keys[k]; delete keys[k]; }
-    Object.assign(keys, {'ctrl+,': openSettings, 'macctrl+r': runFile, 'ctrl+alt+arrowright': () => cycleTab(1), 'ctrl+alt+arrowleft': () => cycleTab(-1)});
-    Object.assign(keys, {'macctrl+-': () => goPlace(-1), 'macctrl+shift+-': () => goPlace(1), 'macctrl+shift+_': () => goPlace(1)});  // a Mac's VS Code; Option+arrows move by word there
-    delete keys['ctrl+f4'];
-    delete keys['alt+arrowleft'];
-    delete keys['alt+arrowright'];
+  const keys = {};
+  for (const row of KEYS) {
+    if (typeof row === 'string') continue;
+    for (const [combo, fn] of Object.entries({...keysOf(row), ...(S.mac ? row.macAlso : {})})) if (fn) keys[combo] = fn;
   }
   // Monaco hears Ctrl+F only inside an editor, so with the tree, a sidebar button or the status bar focused it did
   // nothing, and in the console it opened a find widget that the one-line editor clips out of sight, which then took
