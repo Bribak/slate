@@ -153,7 +153,7 @@ The settings live in `state.json` with your session: `%APPDATA%\slate\state.json
 
 `python tools/shots.py` makes the screenshots in `docs/` the same way, in a throwaway session with glycowork's checkout among its folders (Windows, needs Pillow); run it again when what they show changes.
 
-`python tools/icons.py` redraws slate's file icon for .py files in Explorer (`slate/web/slate-file.ico`, needs Pillow) from the app icon's colours.
+`python tools/icons.py` redraws slate's file icon for .py files in Explorer (`slate/web/slate-file.ico`, needs Pillow) from the app icon's colours. `python tools/trailer.py OUT.mp4` makes slate's 25-second trailer from the screenshots in `docs/` (Windows, needs Pillow and ffmpeg).
 
 `python -m slate --debug` opens slate with the web view's developer tools. `python tools/bench.py LABEL [--flags "<chromium flags>"] [--state '<state keys as JSON>'] [--line N]` measures startup, scroll and typing latency and RAM per process in a real window, with an isolated session; run it before and after any change that could affect speed or memory. `python tools/startup.py LABEL FILE` times a start that opens FILE, as a double-click does, in a copy of your session. `python -m slate.usage [days]` summarises `%APPDATA%\slate\usage.jsonl`, a local log of which calls ran and how long they took, slate's keys, errors with their stack traces, and window and monitor changes. It holds no file contents and is never sent anywhere. `python -m slate.devserver` serves the page at http://localhost:8765 to an ordinary browser, with the same backend over HTTP and a separate session. `bench.py` and `startup.py` measure through Windows tools and run on Windows only.
 

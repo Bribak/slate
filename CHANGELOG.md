@@ -6,6 +6,9 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- Moving the mouse into the editor no longer blanks it for a moment in a large window on a high-DPI screen: slate now gives the graphics card enough memory for the whole editor, and makes up for it elsewhere, so it uses slightly less memory than before.
+- The fold arrows in the gutter and the divider between sidebar and editor show only when the mouse rests there (or drags the divider), not when it passes over them.
+
 ## 0.1.5 (2026-10-24)
 
 - slate's window shows slate's icon on the Windows taskbar instead of Python's, and a slate pinned to the taskbar is the slate that is running.

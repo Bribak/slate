@@ -37,7 +37,8 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 .view-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 4px 10px; font-size: 11px; color: var(--fg-dim); letter-spacing: .04em; }
 .view-head button { font-size: 15px; padding: 0 7px; }
 .sash-v { width: 4px; cursor: col-resize; background: var(--panel-dark); flex: none; }
-.sash-v:hover, .sash-h:hover { background: var(--accent); }
+.sash-v:hover, .sash-h:hover { background: var(--accent); transition: background-color .1s .3s; }  /* lit after 300 ms, as VS Code's sash: a mouse passing from the tree into the editor flashed it */
+.sash-v.dragging, .sash-h.dragging { background: var(--accent); transition: none; }
 
 #tree { flex: 1; overflow: auto; outline: none; padding-bottom: 20px; }
 .node { display: flex; align-items: center; height: 22px; padding-right: 6px; white-space: nowrap; cursor: pointer; user-select: none; }
@@ -91,6 +92,9 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #banner { display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: #49432C; color: #E0D8B0; }
 #editor-wrap { flex: 1; position: relative; min-height: 0; }
 #editor { position: absolute; inset: 0; }
+/* Monaco fades the fold chevrons in while the mouse is over the gutter, which every move from the tree into the code
+   crosses, so each crossing flashed the column of chevrons. They now wait 300 ms there, like the sash */
+.monaco-editor .margin-view-overlays:hover .codicon { transition-delay: .3s; }
 .gw1-gutter { background: var(--warn); width: 3px !important; margin-left: 4px; }
 /* a glycan's SNFG drawing after its string (app.js, glycan drawings); the width comes from the drawing's own rule */
 /* longhands only: a `background` shorthand here would out-rank the drawing's own rule and reset its image */

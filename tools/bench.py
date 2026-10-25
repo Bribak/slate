@@ -1,6 +1,12 @@
 """Measure slate in a real window: startup, scroll and typing frame times, RAM per process, and RAM while inactive.
 
 python tools/bench.py LABEL [--flags "<chromium flags>"] [--options '<Monaco options as JSON>'] [--state '<state keys as JSON>'] [--line N] [--x 4300]
+                            [--behind] [--rect x0,y0,x1,y1]
+
+--behind keeps the window behind every other one, unfocused, with Chromium's occlusion detection off so it still draws:
+for measuring while Daniel works on the same screen (never put a window in front of his). Frame times then miss what the
+screen adds, so compare them only with other --behind runs. --rect places the window in physical pixels; a maximized
+window at 250% is about 0,0,3840,2340, where the GPU memory cap matters (2026-10-25).
 
 Runs an isolated session (%TEMP%\\slate-bench\\LABEL) with 8 tabs from glycowork, scrolls a 2,350-line file, types into a
 scratch copy (nothing is saved), then fires the window's blur event and measures again after 15 s, as when you switch to
@@ -26,11 +32,24 @@ ap.add_argument('--options', default = '{}')
 ap.add_argument('--x', type = int, default = None)
 ap.add_argument('--state', default = '{}', help = 'state keys as JSON, e.g. \'{"glycan_drawings": false}\'')
 ap.add_argument('--line', type = int, default = None, help = 'show this line of the front tab before measuring memory')
+ap.add_argument('--behind', action = 'store_true', help = 'keep the window behind all others, unfocused, still drawing')
+ap.add_argument('--rect', default = None, help = 'window rect in physical pixels, x0,y0,x1,y1')
 args = ap.parse_args()
-if args.flags:
-    os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = args.flags
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from slate import state
+from slate.app import LEAN
+
+if args.behind:
+    # one --disable-features only: Chromium keeps the last of a repeated switch
+    flags, disabled = [], ['CalculateNativeWinOcclusion']
+    for f in (args.flags or LEAN).split():
+        if f.startswith('--disable-features='):
+            disabled += f.split('=', 1)[1].split(',')
+        else:
+            flags.append(f)
+    args.flags = ' '.join(flags + ['--disable-backgrounding-occluded-windows', '--disable-features=' + ','.join(disabled)])
+if args.flags:
+    os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = args.flags
 
 OUT = Path(tempfile.gettempdir()) / 'slate-bench'
 home = OUT / args.label
@@ -40,6 +59,8 @@ G = Path.home() / 'Documents' / 'glycowork' / 'glycowork'
 tabs = [G / 'motif' / f for f in ('processing.py', 'analysis.py', 'draw.py', 'graph.py')] + [G / 'glycan_data' / 'loader.py', G / 'network' / 'biosynthesis.py', G / 'ml' / 'processing.py', G / 'motif' / 'annotate.py']
 tabs = [str(t) for t in tabs if t.is_file()]
 placement = {'rect': [args.x, 120, args.x + 1400, 120 + 900], 'maximized': False} if args.x is not None else None
+if args.rect:
+    placement = {'rect': [int(v) for v in args.rect.split(',')], 'maximized': False}
 state.save({'roots': [str(G.parent)], 'tabs': [{'path': t} for t in tabs], 'active': tabs[0], 'autosave': False, 'consoleOpen': True,
             **({'placement': placement} if placement else {}), **json.loads(args.state)})
 import webview
@@ -48,15 +69,19 @@ MEMORY = r"""
 param([int]$Root)
 function Get-Tree($id) { foreach ($k in Get-CimInstance Win32_Process -Filter "ParentProcessId=$id") { $k; Get-Tree $k.ProcessId } }
 $all = @(Get-CimInstance Win32_Process -Filter "ProcessId=$Root") + @(Get-Tree $Root)
-$perf = @{}
-foreach ($x in Get-CimInstance Win32_PerfFormattedData_PerfProc_Process) { $perf[[int]$x.IDProcess] = [double]$x.WorkingSetPrivate }
-$out = @{}
+$perf = @{}; $commit = @{}
+foreach ($x in Get-CimInstance Win32_PerfFormattedData_PerfProc_Process) { $perf[[int]$x.IDProcess] = [double]$x.WorkingSetPrivate; $commit[[int]$x.IDProcess] = [double]$x.PrivateBytes }
+$gpu = @{}
+foreach ($x in Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory) { if ($x.Name -match '^pid_(\d+)_') { $gpu[[int]$Matches[1]] += [double]$x.SharedUsage + [double]$x.DedicatedUsage } }
+$out = @{}; $com = @{}; $shared = @{}
 foreach ($c in $all) {
   if ($c.Name -eq 'powershell.exe' -or $c.Name -eq 'conhost.exe') { continue }  # this measurement itself
   $role = if ($c.CommandLine -match '--type=(\S+)') { $Matches[1] } elseif ($c.Name -eq 'msedgewebview2.exe') { 'browser' } elseif ($c.ProcessId -eq $Root) { 'slate' } else { $c.Name }
   $out[$role] = [math]::Round($out[$role] + $perf[[int]$c.ProcessId] / 1MB)
+  $com[$role] = [math]::Round($com[$role] + $commit[[int]$c.ProcessId] / 1MB)
+  if ($gpu[[int]$c.ProcessId]) { $shared[$role] = [math]::Round($shared[$role] + $gpu[[int]$c.ProcessId] / 1MB) }
 }
-$out | ConvertTo-Json -Compress
+@{ws = $out; commit = $com; gpu = $shared} | ConvertTo-Json -Compress
 """
 PROBE = r"""
 (async () => {
@@ -144,6 +169,8 @@ RESUME = r"""
 def on_top(window, value):
     """pywebview's window.on_top sets TopMost from the calling thread, which keeps the GIL while it waits for the GUI thread:
     a deadlock whenever the GUI thread is waiting for the GIL to handle a message from the page. Invoke releases it."""
+    if args.behind:
+        return
     from System import Func, Type  # pythonnet, loaded by pywebview by now
     form = window.native
     form.Invoke(Func[Type](lambda: setattr(form, 'TopMost', value)))
@@ -160,7 +187,11 @@ def js(window, code, wait = 120):
 def memory():
     out = subprocess.run(['powershell', '-NoProfile', '-Command', f'& {{ {MEMORY} }} {os.getpid()}'], capture_output = True, text = True, creationflags = subprocess.CREATE_NO_WINDOW).stdout.strip()
     parts = json.loads(out or '{}')
-    return {'total': sum(parts.values()), **parts}
+    ws, commit, gpu = parts.get('ws', {}), parts.get('commit', {}), parts.get('gpu', {})
+    # commit (private bytes) next to Task Manager's number: Windows trims working sets when RAM runs short (2026-10-25, with
+    # 0.6 GB free every process read half its size), which commit does not see. gpu: GPU memory per process (shared +
+    # dedicated), Task Manager's GPU columns; on integrated graphics that is system RAM too, and where tiles live
+    return {'total': sum(ws.values()), **ws, 'commit': {'total': sum(commit.values()), **commit}, 'gpu': gpu}
 
 
 def log(msg):
@@ -231,7 +262,35 @@ def start(*a, **kw):
     return orig_start(*a, **kw)
 
 
+def to_back():
+    """Send this process's window behind all others, without activating it, while it starts up."""
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(h, _):
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value == os.getpid() and u.IsWindowVisible(h):
+            found.append(h)
+        return True
+
+    for _ in range(200):
+        found.clear()
+        u.EnumWindows(each, 0)
+        for h in found:
+            u.SetWindowPos(h, wintypes.HWND(1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # HWND_BOTTOM; no move, size or activation
+        time.sleep(0.05)
+
+
 webview.start = start
+if args.behind:
+    create_window = webview.create_window
+    webview.create_window = lambda *a, **kw: create_window(*a, **{**kw, 'focus': False})
+    threading.Thread(target = to_back, daemon = True).start()
 sys.argv = sys.argv[:1]
 from slate.app import Api, main
 BACKGROUND = threading.Event()

@@ -2799,7 +2799,8 @@ function dragSash(sash, onMove) {
   sash.addEventListener('mousedown', (ev) => {
     ev.preventDefault();
     const move = (e) => onMove(e);
-    const up = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', up); persist(); };
+    const up = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', up); sash.classList.remove('dragging'); persist(); };
+    sash.classList.add('dragging');
     addEventListener('mousemove', move);
     addEventListener('mouseup', up);
   });

@@ -13,8 +13,14 @@ from slate.system import MAC, native
 WEB = Path(__file__).with_name('web')
 # WebView2 flags, measured with tools/bench.py on a 250% screen (8 tabs, console open): together about 220 MB less than plain GPU
 # rendering at the same scroll and typing latency, with pixel-identical output. Low-end mode alone would also store textures at
-# 4 bits per channel (#2B2B2B drawn as #333333), which --disable-rgba-4444-textures undoes; the GPU memory cap saves ~40 MB more.
-LEAN = '--enable-low-end-device-mode --disable-rgba-4444-textures --force-gpu-mem-available-mb=64'
+# 4 bits per channel (#2B2B2B drawn as #333333), which --disable-rgba-4444-textures undoes. The GPU memory cap was 64 MB until
+# 2026-10-25: too little for a maximized window at 250%, where moving the mouse into the editor drew frames with its tiles missing
+# (the editor blank for a frame); 192 MB had no shortfall. Paid for by two savings: --ui-enable-rgba-4444-textures stores the
+# browser's own compositor at 16 bits per pixel, which halves a full-window layer WebView2 draws under the page and nobody sees
+# (35.6 -> 17.8 MB at 250% maximized; only its own dialogs, such as confirm(), lose some anti-aliasing shades), and the network
+# service in the browser process saves its process (about 12 MB). Net, at rest: about 10 MB less than with 64 (CLAUDE.md)
+LEAN = ('--enable-low-end-device-mode --disable-rgba-4444-textures --force-gpu-mem-available-mb=192 --ui-enable-rgba-4444-textures'
+        ' --enable-features=NetworkServiceInProcess2')
 SOFTWARE = '--disable-gpu --disable-gpu-compositing'
 SETTINGS = ('console_python', 'console_pythons', 'style_script', 'gpu', 'usage_log', 'glycan_drawings', 'update_check', 'reference_lookup')  # set_setting's keys
 project_key = lambda root: root.replace('/', '\\').rstrip('\\').lower()  # app.js keyOf, which keys console_pythons
