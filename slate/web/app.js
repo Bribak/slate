@@ -339,6 +339,7 @@ function activate(tab, {mru = true} = {}) {
 }
 
 function onEdit(tab) {
+  noteEdit(tab);
   updateTabEl(tab);
   syncDirty();
   if (tab.model.getLanguageId() === 'py') { lintSoon(tab); markCellsSoon(tab); }
@@ -451,11 +452,54 @@ function tabMenu(tab) {
     ['Close others', () => closeAll(S.tabs.filter((t) => t !== tab))],
     ['Close tabs to the right', () => closeAll(S.tabs.slice(S.tabs.indexOf(tab) + 1))],
     ['Close unchanged tabs', () => closeAll(S.tabs.filter((t) => !isDirty(t)))],
+    null,
     ['Copy path', () => navigator.clipboard.writeText(tab.path)],
     ['Reveal in folder tree', () => { activate(tab); revealActiveInTree(); }],
     [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(tab.path)],
+    null,
     ...(isTableTab(tab) ? [[tab.tableView ? 'Show as text' : 'Show as table', () => toggleTable(tab)]] : []),
+    ...(isDirty(tab) ? [['Compare with saved', () => compareSaved(tab)]] : []),
+    ['Local history…', () => localHistory(tab)],
   ];
+}
+
+// VS Code's "Compare with saved": the file on disk against the tab's unsaved text.
+async function compareSaved(tab) {
+  let disk;
+  try { disk = await api.read_file(tab.path); } catch (e) { toast(errMsg(e)); return; }
+  showDiff(disk.text, tab.model.getValue(), {title: `${basename(tab.path)}: saved (left) and unsaved (right)`, language: tab.model.getLanguageId(),
+    actions: [['Revert to saved', () => {
+      applyText(tab, disk.text);
+      tab.savedVersion = tab.model.getAlternativeVersionId();
+      tab.mtime = disk.mtime;
+      updateTabEl(tab);
+      syncDirty();
+    }]]});
+}
+
+// PyCharm's local history: the versions slate's saves replaced (slate/history.py), newest first, each opening as a diff
+// against the tab's text with a Restore, which is one undoable edit and leaves saving to you.
+async function localHistory(tab) {
+  const versions = await api.history(tab.path);
+  if (!versions.length) { toast(`No earlier versions of ${basename(tab.path)} yet: slate keeps the version each save replaces`, 'info'); return; }
+  const r = tab.el ? tab.el.getBoundingClientRect() : {left: 200, bottom: 60};
+  const kb = (n) => n < 1024 ? `${n} B` : `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
+  showMenu({preventDefault() {}, clientX: r.left, clientY: r.bottom}, versions.slice(0, 30).map((v) => [`${when(v.time)} · ${kb(v.size)}`, async () => {
+    let old;
+    try { old = (await api.history_text(tab.path, v.id)).text; } catch (e) { toast(errMsg(e)); return; }
+    showDiff(old, tab.model.getValue(), {title: `${basename(tab.path)}: ${when(v.time)} (left) and now (right)`, language: tab.model.getLanguageId(),
+      actions: [['Restore this version', () => { activate(tab); applyText(tab, old); }]]});
+  }]));
+}
+
+// "14:32, 5 min ago", "yesterday 09:10", "Oct 21 16:05": how the local history names its versions
+function when(ms) {
+  const d = new Date(ms), now = new Date(), mins = Math.round((now - d) / 60000);
+  const time = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);  // rounded: a day around a clock change is 23 or 25 hours
+  if (!days) return mins < 60 ? `${time}, ${mins < 1 ? 'just now' : mins + ' min ago'}` : time;
+  if (days === 1) return `yesterday ${time}`;
+  return `${d.toLocaleDateString([], {month: 'short', day: 'numeric'})} ${time}`;
 }
 
 function updateTabEl(tab) {
@@ -522,6 +566,30 @@ async function goPlace(step) {
     nav.here = place;
     return;
   }
+}
+
+// Last edit location (PyCharm's Ctrl+Shift+Backspace): where the text was last changed, and on each further press the
+// change before it. Edits within EDIT_LINES of the previous one move that place rather than add one.
+const edited = {places: [], at: null, applying: false};
+const EDITS_KEPT = 30, EDIT_LINES = 5;
+
+function noteEdit(tab) {
+  if (edited.applying || editor.getModel() !== tab.model) return;  // an outside change or a restore, or a tab not in front
+  const pos = editor.getPosition(), list = edited.places, last = list[list.length - 1];
+  const place = {path: tab.path, line: pos.lineNumber, col: pos.column};
+  if (last && keyOf(last.path) === tab.key && Math.abs(last.line - place.line) <= EDIT_LINES) list[list.length - 1] = place;
+  else edited.places = [...list, place].slice(-EDITS_KEPT);
+  edited.at = null;
+}
+
+async function lastEdit() {
+  const list = edited.places, pos = editor.getPosition();
+  let i = edited.at === null ? list.length - 1 : edited.at - 1;
+  if (edited.at === null && i >= 0 && S.active && keyOf(list[i].path) === S.active.key && pos && Math.abs(list[i].line - pos.lineNumber) <= EDIT_LINES) i--;  // already there
+  for (; i >= 0; i--) {
+    if (await openFile(list[i].path, {line: list[i].line, col: list[i].col, quiet: true})) { edited.at = i; return; }  // Back returns from it, as from a definition
+  }
+  toast('No earlier edit location', 'info');
 }
 
 // ---------------------------------------------------------------- files changed outside slate (Claude, git, other tools)
@@ -624,7 +692,8 @@ function applyText(tab, text) {
   });
   if (!edits.length) return;
   model.pushStackElement();
-  model.pushEditOperations(editor.getModel() === model ? editor.getSelections() : [], edits, () => null);
+  edited.applying = true;  // no edit location for an outside change or a restore
+  try { model.pushEditOperations(editor.getModel() === model ? editor.getSelections() : [], edits, () => null); } finally { edited.applying = false; }
   model.pushStackElement();
 }
 
@@ -1772,15 +1841,22 @@ async function revealActiveInTree() {
 
 // ---------------------------------------------------------------- context menus
 
+// items: [label, fn] pairs, with null between groups
+
 function showMenu(ev, items) {
   ev.preventDefault();
   const m = $('menu');
   m.innerHTML = '';
-  for (const [label, fn] of items) {
-    const d = el('div', null, label);
-    d.addEventListener('click', () => { hideMenu(); fn(); });
+  items.forEach((item, i) => {
+    if (!item) {  // null: a rule between groups, never first, last or doubled
+      if (i && items[i - 1] && i < items.length - 1) m.append(el('div', 'sep'));
+      return;
+    }
+    const d = el('div', null, item[0]);
+    d.addEventListener('click', () => { hideMenu(); item[1](); });
     m.append(d);
-  }
+  });
+  m.style.left = m.style.top = '0px';  // measured at its natural width: left where it last was, near an edge, it would wrap to fit
   m.classList.remove('hidden');
   m.style.left = Math.min(ev.clientX, innerWidth - m.offsetWidth - 4) + 'px';
   m.style.top = Math.min(ev.clientY, innerHeight - m.offsetHeight - 4) + 'px';
@@ -1791,8 +1867,10 @@ const hideMenu = () => $('menu').classList.add('hidden');
 function fileMenu(entry) {
   return [
     ['Open', () => openFile(entry.path)],
+    null,
     ['Copy path', () => navigator.clipboard.writeText(entry.path)],
     [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(entry.path)],
+    null,
     ['Rename…', () => renameEntry(entry)],
     [S.mac ? 'Move to Trash' : 'Delete', () => trashEntry(entry)],
   ];
@@ -1802,8 +1880,10 @@ function dirMenu(entry, isRoot, rootIdx) {
   const items = [
     ['New file…', () => createIn(entry, false)],
     ['New folder…', () => createIn(entry, true)],
+    null,
     ['Copy path', () => navigator.clipboard.writeText(entry.path)],
     [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(join(entry.path, '.'))],
+    null,
   ];
   if (isRoot) items.push(['Remove from slate', () => removeRoot(rootIdx)]);
   else items.push(['Rename…', () => renameEntry(entry)], [S.mac ? 'Move to Trash' : 'Delete', () => trashEntry(entry)]);
@@ -1821,7 +1901,7 @@ async function renameEntry(entry) {
   let to;
   try { to = await api.rename(entry.path, name); } catch (e) { toast(errMsg(e)); return; }
   const moved = (p) => (under(p, entry.path) ? to + p.slice(entry.path.length) : p);
-  for (const p of [...nav.back, ...nav.forward, nav.here].filter(Boolean)) p.path = moved(p.path);  // first: retarget's activate compares with nav.here
+  for (const p of [...nav.back, ...nav.forward, nav.here, ...edited.places].filter(Boolean)) p.path = moved(p.path);  // first: retarget's activate compares with nav.here
   for (const tab of open) await retarget(tab, moved(tab.path));
   S.closed = S.closed.map(moved);
   S.expanded = new Set([...S.expanded].map((k) => (under(k, entry.path) ? keyOf(to) + k.slice(entry.path.length) : k)));
@@ -1915,8 +1995,9 @@ function renderFinder() {
   const open = new Set(S.tabs.map((t) => t.key));
   let items = [];
   if (!q) {
-    items = S.mru.map((k) => S.tabs.find((t) => t.key === k)).filter(Boolean)
-      .map((t) => ({path: t.path, name: basename(t.path), i: rootIndexOf(t.path), rel: relPath(t.path), namePos: [], relPos: []}));
+    const recent = [...S.mru.map((k) => S.tabs.find((t) => t.key === k)).filter(Boolean).map((t) => t.path),
+      ...S.closed.filter((p) => !open.has(keyOf(p))).reverse().slice(0, 15)];  // then recently closed files, as PyCharm's Recent Files
+    items = recent.map((p) => ({path: p, name: basename(p), i: rootIndexOf(p), rel: relPath(p), namePos: [], relPos: []}));
   } else if (finderCache) {
     const nameQ = q.includes('\\') ? null : q;
     for (const f of finderCache.files) {
@@ -2802,6 +2883,7 @@ function bindUi() {
     'ctrl+alt+arrowleft': () => goPlace(-1), 'ctrl+alt+arrowright': () => goPlace(1),  // PyCharm's back and forward
     'alt+arrowleft': () => goPlace(-1), 'alt+arrowright': () => goPlace(1),  // VS Code's
     'ctrl+f12': fileStructure,  // PyCharm's file structure popup
+    'ctrl+shift+backspace': lastEdit,  // PyCharm's last edit location
   };
   if (S.mac) {  // Cmd stands in for Ctrl (comboOf), except where a Mac's VS Code and PyCharm keep the Ctrl key itself
     for (const k of ['ctrl+tab', 'ctrl+shift+tab', 'ctrl+`']) { keys['mac' + k] = keys[k]; delete keys[k]; }

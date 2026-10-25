@@ -18,6 +18,8 @@
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); font: 13px var(--ui); }
 button { font: inherit; color: var(--fg); background: none; border: 1px solid transparent; border-radius: 3px; padding: 2px 8px; cursor: pointer; }
 button:hover { background: var(--hover); }
+button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }  /* Tab through the panels and see where you are */
+::selection { background: #214283; }  /* the editor's own selection colour, in the console, tree and panels too */
 input { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 4px 6px; outline: none; }
 input:focus { border-color: var(--accent); }
 kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; }
@@ -134,7 +136,7 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #st-lint.err { color: var(--error); }
 #st-update { color: var(--accent); cursor: pointer; }
 #st-settings { cursor: pointer; font-size: 14px; }
-#st-settings:hover, #st-update:hover, #st-table:hover { color: var(--fg); }
+#st-settings:hover, #st-update:hover, #st-table:hover, #st-lint:not(.warn):not(.err):hover { color: var(--fg); }  /* a coloured count keeps its colour */
 #st-table { cursor: pointer; }
 
 /* overlays */
@@ -151,6 +153,7 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 .settings-row input[type=checkbox] { margin: 0 2px 0 0; accent-color: var(--accent); }
 .settings-note { color: var(--fg-dim); font-size: 12px; padding: 4px 0; }
 .settings-row .settings-note { flex-basis: 100%; padding: 0 0 2px 22px; }
+.settings-label ~ .settings-note { padding-left: 128px; }  /* under a labelled control, not under a checkbox's text: the label's 120 px and the gap */
 select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 3px 4px; outline: none; }
 select:focus { border-color: var(--accent); }
 #settings-restart { margin-top: 2px; border-color: var(--border); }
@@ -183,13 +186,15 @@ select:focus { border-color: var(--accent); }
 #finder-list { max-height: 60vh; overflow: auto; padding-bottom: 6px; }
 .fi { display: flex; gap: 10px; align-items: baseline; padding: 4px 12px; cursor: pointer; white-space: nowrap; }
 .fi.sel { background: var(--select); }
+.fi:not(.sel):hover { background: var(--hover); }
 .fi .name b { color: #E8BF6A; font-weight: normal; }
 .fi .where { color: var(--fg-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .fi .where b { color: #E8BF6A; font-weight: normal; }
 .fi .open { font-size: 11px; color: var(--accent); margin-left: auto; }
-#menu { position: fixed; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 6px 20px #0008; padding: 4px 0; z-index: 60; min-width: 170px; }
-#menu div { padding: 4px 14px; cursor: pointer; }
-#menu div:hover { background: var(--select); }
+#menu { position: fixed; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 6px 20px #0008; padding: 4px 0; z-index: 60; min-width: 170px; max-height: 70vh; overflow-y: auto; }
+#menu div { padding: 4px 14px; cursor: pointer; white-space: nowrap; }
+#menu div:not(.sep):hover { background: var(--select); }
+#menu .sep { height: 1px; margin: 4px 0; padding: 0; background: var(--border); cursor: default; }
 #toast { position: fixed; bottom: 34px; right: 16px; max-width: 520px; background: #4E3434; color: #F2D6D6; padding: 8px 12px; border-radius: 4px; box-shadow: 0 6px 20px #0008; z-index: 70; white-space: pre-wrap; }
 #toast.info { background: var(--panel); color: var(--fg); }
 

@@ -11,17 +11,21 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 import winreg
 from pathlib import Path
 
 from slate import __version__
+from slate.win import APP_ID
 
 HERE = Path(__file__).parent
 ICON = HERE / 'web' / 'slate.ico'
+FILE_ICON = HERE / 'web' / 'slate-file.ico'  # .py files in Explorer: a page in slate's colours (tools/icons.py)
 known = lambda name: Path(os.environ[name].removeprefix('\\\\?\\'))  # some shells hand these out with a \\?\ prefix, which csc rejects
 HOME = known('LOCALAPPDATA') / 'Programs' / 'slate'
 EXE = HOME / 'slate.exe'
 SHORTCUT = known('APPDATA') / 'Microsoft' / 'Windows' / 'Start Menu' / 'Programs' / 'slate.lnk'
+PINNED = known('APPDATA') / 'Microsoft' / 'Internet Explorer' / 'Quick Launch' / 'User Pinned' / 'TaskBar' / 'slate.lnk'
 CSC = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Microsoft.NET' / 'Framework64' / 'v4.0.30319' / 'csc.exe'
 PROGID = 'slate.py'
 KEYS = [r'Software\Classes\slate.py', r'Software\Classes\Applications\slate.exe', r'Software\slate',
@@ -44,6 +48,7 @@ def build_exe():
     if out.returncode:
         raise SystemExit(f'compiling the launcher failed:\n{out.stdout}{out.stderr}')
     shutil.copy2(ICON, HOME / 'slate.ico')
+    shutil.copy2(FILE_ICON, HOME / 'slate-file.ico')
 
 
 def set_value(key, name, value):
@@ -51,23 +56,16 @@ def set_value(key, name, value):
         winreg.SetValueEx(k, name, 0, winreg.REG_DWORD if isinstance(value, int) else winreg.REG_SZ, value)
 
 
-def python_file_icon():
-    try:
-        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r'Python.File\DefaultIcon') as k:
-            return winreg.QueryValueEx(k, '')[0]  # keep .py files looking like Python files in Explorer
-    except OSError:
-        return str(HOME / 'slate.ico')
-
-
 def register():
     command = f'"{EXE}" "%1"'
     app_icon = f'"{EXE}",0'
+    file_icon = str(HOME / 'slate-file.ico')
     set_value(r'Software\Classes\slate.py', '', 'Python File')
-    set_value(r'Software\Classes\slate.py\DefaultIcon', '', python_file_icon())
+    set_value(r'Software\Classes\slate.py\DefaultIcon', '', file_icon)
     set_value(r'Software\Classes\slate.py\shell\open\command', '', command)
     set_value(r'Software\Classes\.py\OpenWithProgids', PROGID, '')
     set_value(r'Software\Classes\Applications\slate.exe', 'FriendlyAppName', 'slate')
-    set_value(r'Software\Classes\Applications\slate.exe\DefaultIcon', '', app_icon)
+    set_value(r'Software\Classes\Applications\slate.exe\DefaultIcon', '', file_icon)  # the files' icon when "Open with" made slate their app
     set_value(r'Software\Classes\Applications\slate.exe\shell\open\command', '', command)
     set_value(r'Software\Classes\Applications\slate.exe\SupportedTypes', '.py', '')
     set_value(r'Software\slate\Capabilities', 'ApplicationName', 'slate')
@@ -89,8 +87,37 @@ def shortcut():
     subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script], check = True, capture_output = True)
 
 
+class PROPERTYKEY(ctypes.Structure):
+    _fields_ = [('fmtid', ctypes.c_byte * 16), ('pid', ctypes.c_ulong)]
+
+
+class PROPVARIANT(ctypes.Structure):
+    _fields_ = [('vt', ctypes.c_ushort), ('reserved', ctypes.c_ushort * 3), ('text', ctypes.c_wchar_p), ('rest', ctypes.c_void_p)]
+
+
+def set_link_app_id(path):
+    """Give a shortcut slate's AppUserModelID (System.AppUserModel.ID), the one slate's process declares (win.set_app_id):
+    Windows then shows the running window under this shortcut's name and icon, and a pin of it as the running slate."""
+    guid = lambda text: (ctypes.c_byte * 16).from_buffer_copy(uuid.UUID(text).bytes_le)
+    key = PROPERTYKEY(guid('9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3'), 5)
+    store = ctypes.c_void_p()
+    ctypes.windll.ole32.CoInitialize(None)
+    ctypes.oledll.shell32.SHGetPropertyStoreFromParsingName(str(path), None, 2, ctypes.byref(guid('886d8eeb-8cf2-4446-8d02-cdba1dbdcf99')),
+                                                            ctypes.byref(store))  # GPS_READWRITE, IID_IPropertyStore
+    table = ctypes.cast(store, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    method = lambda index, *args: ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, *args)(table[index])
+    try:
+        method(6, ctypes.POINTER(PROPERTYKEY), ctypes.POINTER(PROPVARIANT))(store, key, PROPVARIANT(31, (0, 0, 0), APP_ID))  # SetValue, VT_LPWSTR
+        method(7)(store)  # Commit
+    finally:
+        ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(table[2])(store)  # Release
+
+
 def changed():
-    ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED, so Explorer rereads the associations
+    ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x1000, None, None)  # SHCNE_ASSOCCHANGED, so Explorer rereads the associations; SHCNF_FLUSH: once it has
+    refresh = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'System32' / 'ie4uinit.exe'
+    if refresh.is_file():
+        subprocess.run([str(refresh), '-show'], capture_output = True)  # and redraws icons it has cached for .py files
 
 
 def installed():
@@ -103,6 +130,9 @@ def install(open_settings = True):
     build_exe()
     register()
     shortcut()
+    for link in (SHORTCUT, PINNED):  # PINNED: a slate pinned to the taskbar before slate had an AppUserModelID
+        if link.is_file():
+            set_link_app_id(link)
     changed()
     print(f'slate installed as {EXE}, with a Start menu entry and a .py registration.')
     print('If Windows does not offer slate for .py files, use "Choose an app on your PC" and paste that path into the File name box.')
@@ -139,7 +169,7 @@ def uninstall():
     delete_value(r'Software\Classes\.py\OpenWithProgids', PROGID)
     delete_value(r'Software\RegisteredApplications', 'slate')
     SHORTCUT.unlink(missing_ok = True)
-    for name in ('slate.exe', 'slate.ico'):
+    for name in ('slate.exe', 'slate.ico', 'slate-file.ico'):
         (HOME / name).unlink(missing_ok = True)
     if HOME.is_dir() and not any(HOME.iterdir()):
         HOME.rmdir()

@@ -6,6 +6,16 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+## 0.1.5 (2026-10-24)
+
+- slate's window shows slate's icon on the Windows taskbar instead of Python's, and a slate pinned to the taskbar is the slate that is running.
+- .py files that open in slate show slate's own file icon in Explorer.
+- Local history, as in PyCharm: every save keeps the version it replaced, including edits by git or Claude that you then saved over. Right-click a tab and choose Local history… to compare any of them with the text now and restore it.
+- Compare with saved, in a tab's menu: its unsaved changes against the file on disk, with Revert to saved.
+- Ctrl+Shift+Backspace goes to where you last changed something, and further back on each press, as in PyCharm.
+- `TODO` and `FIXME` comments stand out in PyCharm's yellow-green.
+- Ctrl+P lists recently closed files after the open tabs before you type.
+- Menus group their items, diffs use calmer colours, and buttons show where the keyboard focus is.
 - Style checks of large files are up to a third faster (CandyCrunch's prediction.py: 0.66 s → 0.43 s), and squiggles start 0.3 s after you stop typing instead of 0.4 s, as in PyCharm.
 - Find in files is 20-50% faster for plain text: a search of glycowork and CandyCrunch that finds nothing takes 0.16 s instead of 0.29 s.
 - slate starts about 50 ms sooner, and hands a double-clicked file to an open slate about 50 ms sooner.

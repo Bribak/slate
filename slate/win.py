@@ -18,6 +18,15 @@ class SHFILEOPSTRUCTW(ctypes.Structure):
                 ('fAnyOperationsAborted', wintypes.BOOL), ('hNameMappings', ctypes.c_void_p), ('lpszProgressTitle', wintypes.LPCWSTR)]
 
 
+APP_ID = 'io.github.bribak.slate'  # the AppUserModelID, which slate/install.py also gives the Start menu shortcut
+
+
+def set_app_id():
+    """Group slate's window on the taskbar as slate rather than as pythonw.exe, which showed Python's icon there; with the
+    Start menu shortcut carrying the same ID, the taskbar takes its icon and name, and a pinned slate is the running one."""
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+
+
 def allow_foreground(pid):
     user32.AllowSetForegroundWindow(pid)  # only the process the user just started may bring a window to the front
 

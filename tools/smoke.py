@@ -1,6 +1,7 @@
 """Check that slate works in a real window, on Windows and macOS: the page, the bridge, linting, the console, running a
 cell, a traceback link, Markdown output with an inline image, the settings panel, a key, find after a diff view, a second
-launch handing over a file, and renaming a file (and moving one to the Trash on macOS).
+launch handing over a file, renaming a file (and moving one to the Trash on macOS), tables, local history and the last
+edit location.
 
 python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
 
@@ -16,10 +17,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from slate import state
+from slate import history, state
 
 HOME = Path(tempfile.mkdtemp(prefix = 'slate-smoke-')).resolve()  # the long path, as slate opens files: TEMP can be a short 8.3 one (RUNNER~1)
 state.STATE_FILE = HOME / 'state.json'
+history.ROOT = HOME / 'history'
 PROJECT = HOME / 'project'
 PROJECT.mkdir()
 DEMO = PROJECT / 'demo.py'
@@ -133,6 +135,11 @@ def run(window):
     check('glycan typing contexts', js(window, contexts), expect = ['link Gal b1-', 'parent Fuc Gl', 'leaf  ', None])
     refs = "referencesIn('PMID: 37608048, doi:10.1016/S0092-8674(00)81683-9. G00031MO').map((r) => r.kind + ':' + r.id).join(' ')"
     check('PMIDs and DOIs found', js(window, refs), expect = 'pmid:37608048 doi:10.1016/S0092-8674(00)81683-9')
+    check('TODO in a comment', js(window, "monaco.editor.tokenize('x = 1  # TODO later', 'py')[0].map((t) => t.type).join(' ')"), expect = 'identifier.py  operator.py  number.py  comment.py comment.todo.py')
+    edit = f"openFile({json.dumps(str(OTHER))}).then((t) => {{ revealAt(1, 6); editor.trigger('keyboard', 'type', {{text: '0'}}); return save(t); }}).then(() => api.history({json.dumps(str(OTHER))}))"
+    kept = js(window, edit)
+    check('local history keeps what a save replaced', kept and js(window, f"api.history_text({json.dumps(str(OTHER))}, {json.dumps(kept[0]['id'])}).then((v) => v.text.trim())"), expect = 'x = 1')  # trimmed: write_text gave it CRLF on Windows
+    check('last edit location', js(window, f"openFile({json.dumps(str(DEMO))}, {{line: 3}}).then(() => lastEdit()).then(() => [basename(S.active.path), editor.getPosition().lineNumber])"), expect = ['other.py', 1])
     errors = js(window, "JSON.stringify(usage.events.filter((e) => /error/.test(e.kind)).map((e) => e.call || e.message))")
     check('no page or API errors', json.loads(errors or '["no answer"]'), expect = [])
 

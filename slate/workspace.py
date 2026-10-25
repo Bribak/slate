@@ -36,21 +36,29 @@ def read_file(path):
     data = p.read_bytes()
     if b'\0' in data[:8192]:
         raise ValueError(f'{p.name} looks like a binary file')
-    for encoding in ('utf-8-sig' if data.startswith(b'\xef\xbb\xbf') else 'utf-8', 'cp1252', 'latin-1'):
-        try:
-            text = data.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
+    text, encoding = decode(data)
     return {'path': str(p), 'text': text, 'encoding': encoding, 'mtime': str(p.stat().st_mtime_ns)}  # as a string: nanoseconds overflow a JS number's precision
 
 
-def write_file(path, text, encoding = 'utf-8'):
+def decode(data):
+    """A file's text and the encoding it was read in, which write_file saves it in again."""
+    for encoding in ('utf-8-sig' if data.startswith(b'\xef\xbb\xbf') else 'utf-8', 'cp1252'):
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return data.decode('latin-1'), 'latin-1'  # never fails: every byte is a character
+
+
+def write_file(path, text, encoding = 'utf-8', before = None):
+    """`before(path, data)` runs just before the bytes replace the file (slate/history.py keeps the old version)."""
     p = Path(path)
     try:
         data = text.encode(encoding)
     except UnicodeEncodeError as e:
         raise ValueError(f"this {encoding} file cannot hold '{text[e.start]}' (line {text.count(chr(10), 0, e.start) + 1})") from None
+    if before:
+        before(path, data)
     p.write_bytes(data)  # bytes, so the editor's line endings reach the disk untranslated
     return str(p.stat().st_mtime_ns)
 

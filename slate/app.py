@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from slate import __version__, fonts, glycans, glytoucan, hints, instance, libraries, linkages, navigate, pythons, references, repl, state, style, system, update, usage, workspace
+from slate import __version__, fonts, glycans, glytoucan, hints, history, instance, libraries, linkages, navigate, pythons, references, repl, state, style, system, update, usage, workspace
 from slate.system import MAC, native
 
 WEB = Path(__file__).with_name('web')
@@ -174,10 +174,18 @@ class Api:
         return workspace.read_file(path)
 
     def write_file(self, path, text, encoding = 'utf-8'):
-        mtime = workspace.write_file(path, text, encoding)
+        mtime = workspace.write_file(path, text, encoding, before = history.keep)
+        history.wrote(path)
         if path.endswith('.py'):
             style.saved(path)
         return mtime
+
+    def history(self, path):
+        """Local history: the versions saves replaced, newest first (slate/history.py)."""
+        return history.versions(path)
+
+    def history_text(self, path, version):
+        return history.read(path, version)
 
     def stat_files(self, paths):
         return workspace.stat_files(paths)
@@ -359,6 +367,7 @@ def main():
         # system-aware, which makes Windows bitmap-stretch the window on a monitor whose scaling differs from the main one (blurry text);
         # set first, pywebview's later SetProcessDPIAware has no effect.
         ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        native.set_app_id()  # before the window exists: the taskbar reads it then
     api = Api()
     usage.record('start', version = __version__, python = sys.version.split()[0], gpu = api._state.get('gpu', True), files = len(paths),
                  console_python = bool(api._state.get('console_python')))

@@ -76,6 +76,7 @@ window.registerSlatePython = function (monaco) {
         [/^(\s*)(@\s*[a-zA-Z_][\w.]*)/, ['', 'decorator']],
         [/^(\s*)([rRuU]?)("""|''')/, ['', 'string.doc', {token: 'string.doc', next: '@str.$3.n.string.doc'}]],
         [/[ \t\r\n]+/, ''],
+        [/(#.*?)(\b(?:[Tt][Oo][Dd][Oo]|[Ff][Ii][Xx][Mm][Ee])\b.*)$/, ['comment', 'comment.todo']],  // PyCharm's TODO patterns: from the word to the line's end
         [/#.*$/, 'comment'],
         [/([rRbBuUfF]{0,2})("""|'''|"|')/, stringOpen('string')],
         [/(def)(\s+)(__\w+__)/, ['keyword', '', 'dunder.def']],
@@ -138,6 +139,7 @@ window.registerSlatePython = function (monaco) {
       {token: 'string.escape', foreground: 'CC7832'},
       {token: 'string.fbrace', foreground: 'CC7832'},
       {token: 'comment', foreground: '808080', fontStyle: 'italic'},
+      {token: 'comment.todo', foreground: 'A8C023', fontStyle: 'italic'},
       {token: 'delimiter.comma', foreground: 'CC7832'},
       {token: 'delimiter', foreground: 'A9B7C6'},
       {token: 'operator', foreground: 'A9B7C6'},
@@ -184,6 +186,14 @@ window.registerSlatePython = function (monaco) {
       'peekViewEditor.background': '#2B2B2B',
       'peekViewResult.background': '#3C3F41',
       'peekViewTitle.background': '#3C3F41',
+      // diff views (local history, compare with saved, extensions): PyCharm's muted Darcula greens instead of Monaco's bright fills
+      'diffEditor.insertedLineBackground': '#29443699',
+      'diffEditor.insertedTextBackground': '#3D6B4A99',
+      'diffEditor.removedLineBackground': '#4C303099',
+      'diffEditor.removedTextBackground': '#7A3A3A99',
+      'diffEditor.diagonalFill': '#3A3A3A',
+      'diffEditorGutter.insertedLineBackground': '#294436',
+      'diffEditorGutter.removedLineBackground': '#4C3030',
     },
   });
 };
