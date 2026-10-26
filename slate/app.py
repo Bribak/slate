@@ -141,8 +141,16 @@ class Api:
                 self._opens += items
                 return
         if items:
-            self._window.run_js(f'window.slate && slate.openPaths({json.dumps(items)})')
+            self._push('openPaths', items)
         native.bring_to_front('slate')
+
+    def _push(self, name, value):
+        """Call window.slate[name](value) in the page. On Windows as a web message: a script per push, as run_js runs it,
+        stays in the page's heap for good, and console batches carry figures (slate/win.py post)."""
+        if MAC or not hasattr(self._window, 'native'):  # macOS, and the dev server's stand-in window
+            self._window.run_js(f'window.slate && slate.{name}({json.dumps(value)})')
+        else:
+            native.post(self._window, f'slate-push\n{name}\n{json.dumps(value)}')
 
     def set_background(self, background):
         """Ask WebView2 to trim its memory while slate is not the active window (MemoryUsageTargetLevel, WebView2's own API).
@@ -300,7 +308,7 @@ class Api:
 
     def _console_emit(self, batch):
         if self._window is not None:
-            self._window.run_js(f'window.slate && slate.consoleEvents({json.dumps(batch)})')
+            self._push('consoleEvents', batch)
 
     def _on_before_show(self):
         if MAC:  # before_show and closing run on the GUI thread, where the NSWindow may be used
@@ -310,6 +318,7 @@ class Api:
         self._hwnd = self._window.native.Handle.ToInt64()  # before_show runs on the GUI thread, where the handle may be read
         if self._state.get('placement'):
             native.set_placement(self._hwnd, self._state['placement'])
+        native.reload_on_crash(self._window.native, lambda **fields: usage.record('renderer_failed', **fields))
 
     def _on_shown(self):
         self._dpi = None if MAC else native.monitor_dpi(self._hwnd)  # only DPI changes after this are the user's moves; macOS rescales by itself
@@ -374,6 +383,7 @@ def main():
         # set first, pywebview's later SetProcessDPIAware has no effect.
         ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
         native.set_app_id()  # before the window exists: the taskbar reads it then
+        native.answer_by_message()  # pywebview's answers by script stayed in the page's heap until it crashed (slate/win.py)
     api = Api()
     usage.record('start', version = __version__, python = sys.version.split()[0], gpu = api._state.get('gpu', True), files = len(paths),
                  console_python = bool(api._state.get('console_python')))

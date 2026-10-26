@@ -1,7 +1,11 @@
-"""The Windows side of slate's window: placement in physical pixels, following DPI between monitors, and coming to the front
-(app.py; slate/mac.py is the macOS side)."""
+"""The Windows side of slate's window: placement in physical pixels, following DPI between monitors, coming to the front,
+and answering the page's API calls (app.py; slate/mac.py is the macOS side)."""
 import ctypes
+import json
 import os
+import threading
+import time
+import traceback
 from ctypes import wintypes
 
 user32 = ctypes.windll.user32
@@ -29,6 +33,69 @@ def set_app_id():
 
 def allow_foreground(pid):
     user32.AllowSetForegroundWindow(pid)  # only the process the user just started may bring a window to the front
+
+
+def post(window, text):
+    """Hand text to the page as a WebView2 web message (app.js listens for them). Not a script: WebView2 keeps every script
+    run in the page (evaluate_js, run_js) for as long as the page lives, with whatever data it carries as a literal."""
+    from System import Action  # pythonnet, loaded by pywebview by now
+    view = window.native.webview
+    if view.IsDisposed:
+        return  # the window closed; Invoke would throw an exception pythonnet cannot wrap, ending the process
+    try:
+        view.Invoke(Action(lambda: view.CoreWebView2.PostWebMessageAsString(text)))
+    except Exception:
+        pass  # closed meanwhile
+
+
+def reload_on_crash(form, record):
+    """Reload the page when its renderer process dies, as WebView2's documentation advises; it would otherwise stay blank
+    until slate restarts. The page restores the saved session; unsaved text was lost with the renderer. At most once a
+    minute, so a page that crashes as it loads cannot loop. record(process, reason, reloaded) goes to the usage log.
+    Runs on the GUI thread (before_show), where WebView2 may be touched. An exception in the handler vanishes silently."""
+    from Microsoft.Web.WebView2.Core import CoreWebView2ProcessFailedKind
+    view, last = form.webview, [0.0]
+
+    def failed(core, args):
+        reload = args.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited and time.monotonic() - last[0] > 60
+        record(process = str(args.ProcessFailedKind), reason = str(args.Reason), reloaded = reload)
+        if reload:
+            last[0] = time.monotonic()
+            core.Reload()
+
+    if view.CoreWebView2 is not None:
+        view.CoreWebView2.ProcessFailed += failed
+    else:
+        def ready(sender, args):
+            if view.CoreWebView2 is not None:
+                view.CoreWebView2.ProcessFailed += failed
+        view.CoreWebView2InitializationCompleted += ready
+
+
+def answer_by_message():
+    """Send the answers to the page's API calls by post, which app.js hands to pywebview's callbacks. pywebview answers
+    each call with evaluate_js, a script holding the answer as a literal, and those scripts never left the page's heap: 30
+    garbage collections later, 40 reads of a 442 KB file still held 37 MB. With --enable-low-end-device-mode the page's
+    heap is capped at 256 MB, so a session that reread big files (the Changes extension on every focus) crashed the renderer
+    and left a blank window (2026-10-26). pywebview's own calls (pywebview*) keep its way. Called before webview.start,
+    which imports the WebView2 backend and with it js_bridge_call."""
+    from webview import util
+    original = util.js_bridge_call
+
+    def answer(window, func, name, params, call_id):
+        try:
+            text, failed = json.dumps(func(*params)), '0'
+        except Exception as e:
+            util.logger.error(traceback.format_exc())
+            text, failed = json.dumps({'message': str(e), 'name': type(e).__name__, 'stack': traceback.format_exc()}), '1'
+        post(window, f'slate-answer\n{name}\n{call_id}\n{failed}\n{text}')
+
+    def bridge_call(window, name, params, call_id):
+        func = None if name.startswith('pywebview') else getattr(window._js_api, name, None)
+        if not callable(func):
+            return original(window, name, params, call_id)
+        threading.Thread(target = answer, args = (window, func, name, params, call_id)).start()
+    util.js_bridge_call = bridge_call
 
 
 class WINDOWPLACEMENT(ctypes.Structure):

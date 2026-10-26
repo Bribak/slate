@@ -144,6 +144,27 @@ function boot() {
 if (window.pywebview && window.pywebview.api && window.pywebview.api.get_state) boot();
 else window.addEventListener('pywebviewready', boot);
 
+// On Windows, Python answers api calls and pushes console output and files to open as web messages (slate/win.py post):
+// 'slate-answer\nname\nid\nfailed\njson', handed to the callback pywebview's call is waiting on, and 'slate-push\nname\njson'
+// for window.slate[name]. pywebview's own way, a script per answer or push, stayed in the page's heap until the renderer ran
+// out of memory.
+if (window.chrome && window.chrome.webview) {
+  window.chrome.webview.addEventListener('message', (e) => {
+    const d = e.data;
+    const push = typeof d === 'string' && d.startsWith('slate-push\n');
+    if (!push && !(typeof d === 'string' && d.startsWith('slate-answer\n'))) return;
+    const parts = [];
+    let at = 0;
+    for (let k = 0; k < (push ? 2 : 4); k++) { const end = d.indexOf('\n', at); parts.push(d.slice(at, end)); at = end + 1; }
+    if (push) {
+      if (window.slate) window.slate[parts[1]](JSON.parse(d.slice(at)));
+      return;
+    }
+    const answer = (window.pywebview._returnValuesCallbacks[parts[1]] || {})[parts[2]];
+    if (answer) answer({value: d.slice(at), isError: parts[3] === '1'});
+  });
+}
+
 // Load the JetBrains Mono that PyCharm ships (Python finds it) under the name 'slate mono', before the editor measures the font.
 async function loadFonts() {
   let files = [];
