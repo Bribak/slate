@@ -6,6 +6,8 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- Many open tabs no longer slow slate down: the tabs it restores are read the first time you look at them, so 29 tabs start as fast as one, with about 70 MB less memory and no 6 s of checking every file in the background.
+
 ## 0.2.0 (2026-10-27)
 
 - slate now runs on Linux too, in a window made of GTK and WebKitGTK; README.md says what to install first. `python -m slate --install` adds it to the desktop's app menu and to a .py file's Open With.

@@ -1,5 +1,5 @@
 """Check that slate works in a real window, on Windows, macOS and Linux: the page, the bridge, linting, the console, running a
-cell, a traceback link, Markdown output with an inline image, the settings panel and its keys, a key, find after a diff
+cell, a restored tab read only when shown, a traceback link, Markdown output with an inline image, the settings panel and its keys, a key, find after a diff
 view, a second launch handing over a file, renaming a file (and moving one to the Trash on macOS and Linux), tables, local history
 and the last edit location.
 
@@ -29,7 +29,9 @@ DEMO.write_text('# %% first\nimport os\nvalue = 6 * 7\nprint("smoke", value, os.
                 encoding = 'utf-8')  # "\d" is a SyntaxWarning, which slate marks without any check_style.py
 OTHER = PROJECT / 'other.py'
 OTHER.write_text('x = 1\n', encoding = 'utf-8')
-state.save({'roots': [str(PROJECT)], 'tabs': [{'path': str(DEMO)}], 'active': str(DEMO), 'autosave': False, 'consoleOpen': True,
+UNREAD = PROJECT / 'unread.py'
+UNREAD.write_text('y = 2\n', encoding = 'utf-8')
+state.save({'roots': [str(PROJECT)], 'tabs': [{'path': str(DEMO)}, {'path': str(UNREAD)}], 'active': str(DEMO), 'autosave': False, 'consoleOpen': True,
             'usage_log': False, 'update_check': False})
 import webview
 
@@ -86,6 +88,11 @@ def probe(window):
 
 def run(window):
     check('page ready', until(window, 'typeof S !== "undefined" && S.ready && !!S.active && S.active.path'), expect = str(DEMO))
+    unread = f"S.tabs.find((t) => t.path === {json.dumps(str(UNREAD))})"
+    check('a restored tab is not read before it is shown', js(window, f"{unread}.model === null && 1"), expect = 1)
+    js(window, f"activate({unread}) || 1")
+    check('an unread tab is read and checked when shown', until(window, f"S.active === {unread} && S.active.linted && S.active.model.getValue().trim()"), expect = 'y = 2')
+    js(window, f"activate(S.tabs.find((t) => t.path === {json.dumps(str(DEMO))})) || 1")
     check('platform seen by the page', json.loads(js(window, 'JSON.stringify([S.mac, S.linux, S.sep])') or 'null'), expect = [MAC, LINUX, '\\' if WINDOWS else '/'])
     colors = "S.active.model.getAllDecorations().map((d) => d.options.inlineClassName).filter((c) => /^snfg-(purple|yellow|blue)$/.test(c || '')).length"
     check('glycan residues in SNFG colours', until(window, colors, wait = 10), expect = 3)  # page only, so without glycowork too; only the front file has them
@@ -116,7 +123,7 @@ def run(window):
     check('find works after a diff view', until(window, "editor.getAction('actions.find').run().then(() => document.querySelectorAll('#editor .find-widget').length)", wait = 10), expect = 1)
     check('second launch hands over a file', instance.hand_off([str(OTHER)]))
     check('handed file opened', until(window, f"S.tabs.some((t) => t.path === {json.dumps(str(OTHER))}) && 1"), expect = 1)
-    check('no other tabs', js(window, 'S.tabs.length'), expect = 2)  # on macOS AppKit once also opened smoke.py from the command line
+    check('no other tabs', js(window, 'S.tabs.length'), expect = 3)  # on macOS AppKit once also opened smoke.py from the command line
     spare = PROJECT / 'spare.txt'
     spare.write_text('spare\n', encoding = 'utf-8')
     renamed = js(window, f"api.rename({json.dumps(str(spare))}, 'renamed.txt')")

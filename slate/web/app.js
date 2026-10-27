@@ -221,13 +221,12 @@ async function init(saved) {
   layout();
   // files double-clicked in Explorer come first, so the one asked for shows before the rest of the session is back
   const savedTabs = saved.tabs || [];
-  // The saved tabs and the extensions are asked for together with the launched files: each is a round trip over the bridge,
-  // and waiting for the extensions (111 ms in the usage log) before the first read held the whole session back
-  const reads = savedTabs.map((t) => {  // openFile reports failures
-    const read = api.read_file(t.path);
-    read.catch(() => {});
-    return read;
-  });
+  // Only the saved front tab is read; the others come back as tabs without a model (loadTab). Its read and the extensions are
+  // asked for together with the launched files: each is a round trip over the bridge, and waiting for the extensions (111 ms
+  // in the usage log) before the first read held the whole session back.
+  const front = savedTabs.find((t) => saved.active && keyOf(t.path) === keyOf(saved.active)) || savedTabs[0];
+  const frontRead = front && api.read_file(front.path);
+  if (frontRead) frontRead.catch(() => {});
   const extensions = api.extensions().catch(() => []);
   const launched = await api.page_ready();
   if (launched.length) {
@@ -237,14 +236,16 @@ async function init(saved) {
   loadExtensions(await extensions);  // before showView, which may restore a view an extension adds
   showView(S.view);
   renderTree();
-  for (const [i, t] of savedTabs.entries()) await openFile(t.path, {background: true, viewState: t.viewState, quiet: true, file: reads[i]});
+  for (const t of savedTabs) if (!S.tabs.some((x) => x.key === keyOf(t.path))) S.tabs.push(unreadTab(t.path, t.viewState));
   const rank = new Map(savedTabs.map((t, i) => [keyOf(t.path), i]));
   const rankOf = (tab) => (rank.has(tab.key) ? rank.get(tab.key) : rank.size);
   S.tabs.sort((a, b) => rankOf(a) - rankOf(b));  // the saved order, then the launched files, as before
   S.mru = [...S.mru, ...(saved.mru || []).filter((k) => !S.mru.includes(k) && S.tabs.some((t) => t.key === k))];
-  const active = saved.active && S.tabs.find((t) => t.key === keyOf(saved.active));
-  if (!S.active && (active || S.tabs.length)) activate(active || S.tabs[0]);
-  else renderTabs();
+  while (!S.active && S.tabs.length) {  // a saved front tab whose file is gone gives way to the next
+    const tab = (saved.active && S.tabs.find((t) => t.key === keyOf(saved.active))) || S.tabs[0];
+    if (await loadTab(tab, {file: front && tab.key === keyOf(front.path) ? frontRead : null, quiet: true})) activate(tab);
+  }
+  renderTabs();
   if (saved.consoleOpen) toggleConsole(true);
   updateStatus();
   S.ready = true;
@@ -254,7 +255,7 @@ async function init(saved) {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDisk(); });
   setInterval(flushUsage, 60000);
   setTimeout(checkUpdate, 5000);  // well after startup; Python asks GitHub on a thread of its own
-  usage.events.push({kind: 'ready', ms: Math.round(performance.now()), tabs: S.tabs.length, roots: S.roots.length, dpr: devicePixelRatio,
+  usage.events.push({kind: 'ready', ms: Math.round(performance.now()), tabs: S.tabs.length, read: S.tabs.filter((t) => t.model).length, roots: S.roots.length, dpr: devicePixelRatio,
     launched: launched.length, file_ms: S.launchedMs});
   addEventListener('resize', debounce(() => {
     const box = $('editor'), info = editor.getLayoutInfo();
@@ -286,27 +287,64 @@ function modelFor(path, text) {
   return model;
 }
 
-const isDirty = (tab) => tab.model.getAlternativeVersionId() !== tab.savedVersion;
+const isDirty = (tab) => !!tab.model && tab.model.getAlternativeVersionId() !== tab.savedVersion;
+
+// A restored tab is only a name until it first comes to the front: then it is read, gets its model and is checked (loadTab).
+// Reading and checking all 29 tabs of a real session at every start cost about 70 MB and kept Python busy for 6 s.
+// Code that walks S.tabs skips tabs without a model; host.tabFor treats them as not open, since the file on disk is their text.
+const unreadTab = (path, viewState) => ({path, key: keyOf(path), model: null, viewState: viewState || null, markers: []});
+
+function fillTab(tab, file) {
+  const model = modelFor(file.path, file.text);
+  Object.assign(tab, {path: file.path, key: keyOf(file.path), model, savedVersion: model.getAlternativeVersionId(), mtime: file.mtime, encoding: file.encoding});
+  model.onDidChangeContent(() => onEdit(tab));
+  if (model.getLanguageId() === 'py') { lintLater(tab); markCells(tab); }
+}
+
+// Reads an unread tab once, however many ask; false when its file is gone (the tab goes too) or the tab was closed meanwhile
+function loadTab(tab, {file = null, quiet = false} = {}) {
+  if (tab.model) return Promise.resolve(true);
+  tab.loading = tab.loading || (async () => {
+    let read;
+    try {
+      read = await (file || api.read_file(tab.path));
+    } catch (e) {
+      tab.loading = null;
+      if (S.tabs.includes(tab)) {
+        if (!quiet) toast(errMsg(e));  // as openFile's
+        S.tabs.splice(S.tabs.indexOf(tab), 1);
+        S.mru = S.mru.filter((k) => k !== tab.key);
+        renderTabs();
+        persist();
+      }
+      return false;
+    }
+    tab.loading = null;
+    if (!S.tabs.includes(tab)) return false;
+    fillTab(tab, read);
+    return true;
+  })();
+  return tab.loading;
+}
 
 async function openFile(path, opts = {}) {
   let tab = S.tabs.find((t) => t.key === keyOf(path));
+  if (tab && !(await loadTab(tab, opts))) return null;
   if (!tab) {
     let file;
     try {
-      file = await (opts.file || api.read_file(path));
+      file = await api.read_file(path);
     } catch (e) {
       if (!opts.quiet) toast(errMsg(e));
       return null;
     }
     tab = S.tabs.find((t) => t.key === keyOf(file.path));  // opened by another call while this one waited
+    if (tab && !(await loadTab(tab, {file}))) return null;
     if (!tab) {
-      const model = modelFor(file.path, file.text);
-      tab = {path: file.path, key: keyOf(file.path), model, savedVersion: model.getAlternativeVersionId(),
-        mtime: file.mtime, encoding: file.encoding, viewState: opts.viewState || null, markers: []};
-      model.onDidChangeContent(() => onEdit(tab));
+      tab = unreadTab(file.path, opts.viewState);
       const at = S.active && !opts.background ? S.tabs.indexOf(S.active) + 1 : S.tabs.length;
       S.tabs.splice(at, 0, tab);
-      if (model.getLanguageId() === 'py') { lintLater(tab); markCells(tab); }
+      fillTab(tab, file);
     }
   }
   if (opts.background) return tab;
@@ -341,6 +379,11 @@ function revealAt(line, col, endCol) {
 }
 
 function activate(tab, {mru = true} = {}) {
+  S.wanted = tab;  // an unread tab comes to the front once read, unless another was asked for meanwhile
+  if (!tab.model) {
+    loadTab(tab).then((ok) => { if (ok && S.wanted === tab) activate(tab, {mru: mru || mruCycle === null}); });  // Ctrl released meanwhile: Ctrl+Tab settled here
+    return;
+  }
   const switching = S.active !== tab || editor.getModel() !== tab.model;  // the tab in front keeps its cursor: its viewState is from when it was last left
   if (S.active && S.active !== tab && !S.active.model.isDisposed()) S.active.viewState = editor.saveViewState();
   S.active = tab;
@@ -408,7 +451,7 @@ function closeTab(tab, {force = false} = {}) {
     if (next) activate(next);
     else { editor.setModel(null); $('empty').classList.remove('hidden'); renderBanner(); updateStatus(); syncTable(); }
   }
-  tab.model.dispose();
+  if (tab.model) tab.model.dispose();
   syncDirty();
   renderTabs();
   persist();
@@ -505,6 +548,7 @@ async function compareSaved(tab) {
 // PyCharm's local history: the versions slate's saves replaced (slate/history.py), newest first, each opening as a diff
 // against the tab's text with a Restore, which is one undoable edit and leaves saving to you.
 async function localHistory(tab) {
+  if (!(await loadTab(tab))) return;
   const versions = await api.history(tab.path);
   if (!versions.length) { toast(`No earlier versions of ${basename(tab.path)} yet: slate keeps the version each save replaces`, 'info'); return; }
   const r = tab.el ? tab.el.getBoundingClientRect() : {left: 200, bottom: 60};
@@ -626,7 +670,7 @@ async function checkDisk() {
   try {
     const stats = await api.stat_files(S.tabs.map((t) => t.path));
     for (const tab of [...S.tabs]) {
-      if (tab.model.isDisposed()) continue;
+      if (tab.model && tab.model.isDisposed()) continue;
       const mtime = stats[tab.path];
       if (mtime === undefined) continue;
       if (mtime === null) {
@@ -634,7 +678,7 @@ async function checkDisk() {
         continue;
       }
       if (tab.deleted) { tab.deleted = false; updateTabEl(tab); }
-      if (mtime !== tab.mtime) await diskChanged(tab);
+      if (tab.model && mtime !== tab.mtime) await diskChanged(tab);  // an unread tab reads the file when it comes to the front
     }
   } catch (e) {
     console.error(e);
@@ -1938,6 +1982,12 @@ async function renameEntry(entry) {
 
 // A renamed file's tab keeps its place, now with a model at the new path (models are keyed by path). Never an unsaved one.
 async function retarget(tab, path) {
+  if (!tab.model) {  // unread: only its name moves
+    const oldKey = tab.key;
+    Object.assign(tab, {path, key: keyOf(path), deleted: false});
+    S.mru = S.mru.map((k) => (k === oldKey ? tab.key : k));
+    return;
+  }
   let file;
   try { file = await api.read_file(path); } catch (e) { toast(errMsg(e)); return; }
   const front = tab === S.active, old = tab.model, oldKey = tab.key;
@@ -2796,7 +2846,7 @@ function showDiff(original, modified, {title = '', language = 'plaintext', actio
 
 const host = {
   get api() { return api; }, get monaco() { return monaco; }, get editor() { return editor; },
-  roots: () => [...S.roots], tabFor: (path) => S.tabs.find((t) => t.key === keyOf(path)) || null,
+  roots: () => [...S.roots], tabFor: (path) => S.tabs.find((t) => t.key === keyOf(path) && t.model) || null,  // an unread tab's text is the file's
   openFile, revealAt, toast, el, escapeHtml, keyOf, join, basename, dirname, relPath, rootColor, rootIndexOf,
   showMenu, addView, showDiff, on,
 };
