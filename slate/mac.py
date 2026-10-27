@@ -22,7 +22,7 @@ def allow_foreground(pid):
     pass  # on macOS the running app brings itself forward (bring_to_front)
 
 
-def bring_to_front(title):
+def bring_to_front(title, token = None):  # token: Linux only (slate/linux.py)
     import AppKit
     from PyObjCTools import AppHelper
     AppHelper.callAfter(lambda: AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True))

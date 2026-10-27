@@ -9,7 +9,9 @@ description = "A small Python editor that keeps out of the way of your RAM"
 readme = "README.md"
 authors = [{name = "Daniel Bojar"}]
 requires-python = ">=3.10"
-dependencies = ["pywebview>=6.2", "jedi>=0.19", "pycodestyle>=2.11"]
+# On Linux pywebview draws with GTK through PyGObject; not its [gtk] extra, which pins a PyGObject that pip must build, while
+# a venv made with --system-site-packages already has the distribution's own (python3-gi, README.md)
+dependencies = ["pywebview>=6.2", "jedi>=0.19", "pycodestyle>=2.11", "PyGObject>=3.42; sys_platform == 'linux'"]
 
 [project.gui-scripts]
 slate = "slate.app:main"

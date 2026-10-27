@@ -2,7 +2,7 @@
 
 A Python editor made for glycobiology. It draws the glycans in your code in SNFG, shows GlycoDraw's drawings and your plots in its console, explains the functions of glycowork, CandyCrunch, glycorender and glycontact as you call them, and checks your code against the lab's coding standard as you type. It is also small: on Windows, with eight files and the console open, it uses about 430 MB of RAM where PyCharm used 4.5 GB, and a keystroke is on screen in 22 ms.
 
-slate runs on Windows and macOS. It is Monaco (the editor component of VS Code) in the system's own web view (WebView2 on Windows, WebKit on macOS), driven by Python. macOS support is new: so far an automated test checks it on GitHub's Macs (tools/smoke.py), but nobody uses it daily yet, so please report what looks or feels wrong.
+slate runs on Windows, macOS and Linux. It is Monaco (the editor component of VS Code) in the system's own web view (WebView2 on Windows, WebKit on macOS, WebKitGTK on Linux), driven by Python. macOS and Linux support are new: an automated test checks them on GitHub's Macs and Ubuntu machines (tools/smoke.py), but nobody uses them daily yet, so please report what looks or feels wrong. The figures in this README were measured on Windows.
 
 ## Made for glycobiology
 
@@ -52,7 +52,12 @@ Every new feature is measured against these before it goes in (see Development),
 
 * Windows 10 or 11. The WebView2 runtime and the .NET Framework 4 compiler that slate uses come with Windows.
 * Or macOS 12 or newer. Everything slate uses to install itself comes with macOS.
-* Python 3.10 or newer (tested with 3.12): from python.org on Windows; on macOS from python.org, Homebrew, conda or pyenv. slate runs on this Python; the console can use a different one (see Settings).
+* Or Linux with GTK 3 and WebKitGTK, which slate's window is made of, and PyGObject, through which Python uses them. On Ubuntu 22.04 or newer and Debian 12 or newer:
+  ```
+  sudo apt install python3-gi gir1.2-webkit2-4.1 python3-venv
+  ```
+  Other distributions have the same three under their own names (PyGObject, WebKitGTK 4.1 or 4.0 with its GObject introspection data, and Python's venv module).
+* Python 3.10 or newer (tested with 3.12): from python.org on Windows; on macOS from python.org, Homebrew, conda or pyenv; on Linux the distribution's own `python3`. slate runs on this Python; the console can use a different one (see Settings).
 
 ## Install
 
@@ -64,12 +69,18 @@ Every new feature is measured against these before it goes in (see Development),
    ```
    pip install https://github.com/Bribak/slate/archive/refs/heads/main.zip
    ```
+   On Linux, install it into a virtual environment that sees the distribution's PyGObject (`--system-site-packages`; pip cannot install into the system's Python itself, and building PyGObject would need compilers and headers):
+   ```
+   python3 -m venv --system-site-packages ~/.local/share/slate-venv
+   ~/.local/share/slate-venv/bin/pip install git+https://github.com/Bribak/slate
+   ```
+   and use `~/.local/share/slate-venv/bin/python` for `python` in step 2.
 2. Install slate as an app, for your user only (no admin rights needed):
    ```
    python -m slate --install
    ```
-   On Windows this adds slate to the Start menu and to Settings → Apps → Installed apps, and registers it for .py files. On macOS it makes `~/Applications/slate.app`, which Launchpad, Spotlight and Finder's Open With list, and which you can keep in the Dock.
-3. On macOS, to open .py files with slate by double-clicking: select one in Finder, **File → Get Info**, choose slate under **Open with**, then **Change All**. The rest of this step is for Windows.
+   On Windows this adds slate to the Start menu and to Settings → Apps → Installed apps, and registers it for .py files. On macOS it makes `~/Applications/slate.app`, which Launchpad, Spotlight and Finder's Open With list, and which you can keep in the Dock. On Linux it adds slate with its icon to the desktop's app menu and to a .py file's Open With (a desktop entry and an icon in `~/.local/share`), from where you can pin it to the dock.
+3. On macOS, to open .py files with slate by double-clicking: select one in Finder, **File → Get Info**, choose slate under **Open with**, then **Change All**. On Linux: right-click a .py file, **Properties → Open With** (wording differs by desktop), choose slate and set it as the default; or in a terminal, `xdg-mime default io.github.bribak.slate.desktop text/x-python text/x-python3`. The rest of this step is for Windows.
 
    Make slate the default for .py files. Windows does not let programs set this themselves, so it is one click: on the Settings page that step 2 opened (Default apps → slate), click **Set default**. If you closed it, double-click any .py file instead and answer Windows' "How do you want to open this file?" with **slate** and **Always**.
 
@@ -79,11 +90,11 @@ Every new feature is measured against these before it goes in (see Development),
    ```
    That is `C:\Users\<your user name>\AppData\Local\Programs\slate\slate.exe`. Paste the path rather than browsing, because File Explorer hides the AppData folder.
 
-Start slate from the Start menu or Launchpad, by double-clicking a .py file, or with `slate` in a terminal. On Windows, .py files that open in slate show slate's file icon in Explorer, and slate's window shows its own icon on the taskbar (pin it there to start it from the taskbar). Opening more files while slate is open adds them as tabs to the open window instead of starting another one; on macOS you can also drop files and folders on its Dock icon.
+Start slate from the Start menu, Launchpad or the app menu, by double-clicking a .py file, or with `slate` in a terminal (on Linux `~/.local/share/slate-venv/bin/slate`, unless that folder is on your PATH). On Windows, .py files that open in slate show slate's file icon in Explorer, and slate's window shows its own icon on the taskbar (pin it there to start it from the taskbar). Opening more files while slate is open adds them as tabs to the open window instead of starting another one; on macOS you can also drop files and folders on its Dock icon.
 
 Run `python -m slate --install` again after upgrading or moving Python. `python -m slate --uninstall` removes everything step 2 added, as does uninstalling slate under Installed apps on Windows.
 
-**Updates.** Once a day slate asks GitHub for its newest release. When there is a newer one, the status bar says "slate 0.2.0 is available"; click it to see what changed since your version and install it with pip (about 40 s), then restart slate. The first start after an update offers the same notes once in the status bar; all of them are in [CHANGELOG.md](CHANGELOG.md). A release is made automatically when a new version number reaches GitHub and slate has passed its tests in a real window on Windows and macOS (`.github/workflows/smoke.yml`), so an update installs exactly that tested version, never work in progress. Turn the check off in Settings. To work on slate itself, clone it and install with `pip install -e .` instead; such a checkout gets no update notices.
+**Updates.** Once a day slate asks GitHub for its newest release. When there is a newer one, the status bar says "slate 0.2.0 is available"; click it to see what changed since your version and install it with pip (about 40 s), then restart slate. The first start after an update offers the same notes once in the status bar; all of them are in [CHANGELOG.md](CHANGELOG.md). A release is made automatically when a new version number reaches GitHub and slate has passed its tests in a real window on Windows, macOS and Linux (`.github/workflows/smoke.yml`), so an update installs exactly that tested version, never work in progress. Turn the check off in Settings. To work on slate itself, clone it and install with `pip install -e .` instead; such a checkout gets no update notices.
 
 ## Also a complete Python editor
 
@@ -92,7 +103,7 @@ Run `python -m slate --install` again after upgrading or moving Python. `python 
 * **Errors before you run.** Every .py file is compiled as you type, so syntax and indentation errors, `return` outside a function and similar mistakes are underlined in red, the tab name turns red, and the status bar names the error and line. SyntaxWarnings such as an invalid `"\d"` escape are underlined too.
 * **Sharp on every monitor.** Text renders at each monitor's own scaling, and the window keeps its size when moved between a laptop screen and an external monitor. It reopens where it was closed, maximized (zoomed) or not.
 * **Navigation.** Add project folders with **+** in the folder tree; several sit side by side. Ctrl+P finds a file by name across all of them (`name:120` jumps to line 120); before you type, it lists the open tabs, most recent first, and then the files you closed lately. Ctrl+Shift+F searches their contents. Ctrl+click or F12 goes to a definition: the open folders' own names (variables, functions, classes, methods, keyword arguments, imports) straight from the syntax tree, library code and attributes of objects through jedi. Ctrl+Alt+Left (or Alt+Left, or the mouse's back button) goes back to where you jumped from, as in PyCharm, and Ctrl+Alt+Right forward again; a jump is a definition, a search result, another tab or a move of ten lines or more, never typing or a click. Ctrl+F12 lists the file's classes and functions to jump to. Ctrl+Shift+Backspace goes to where you last changed something, and on each further press to the change before, as PyCharm's "last edit location" does.
-* **Tabs and files.** Right-click a tab to close the others, the ones to its right or all unchanged ones, or to copy its path. **Compare with saved** shows a tab's unsaved changes against the file on disk, with a button to revert to it. Right-click a file or folder in the tree to rename it, which keeps its open tabs, or to delete it to the Recycle Bin (the Trash on macOS).
+* **Tabs and files.** Right-click a tab to close the others, the ones to its right or all unchanged ones, or to copy its path. **Compare with saved** shows a tab's unsaved changes against the file on disk, with a button to revert to it. Right-click a file or folder in the tree to rename it, which keeps its open tabs, or to delete it to the Recycle Bin (the Trash on macOS and Linux).
 * **Local history.** As in PyCharm, every save keeps the version it replaced: right-click a tab and choose **Local history…** to see them by time, each as a side-by-side diff with the text now, and **Restore** one (an ordinary edit you can undo, saved when you save). That includes versions written by git, Claude or any other tool before you saved over them, which are always kept; slate's own saves are kept at most once a minute. The newest 50 versions of each file are kept for 30 days, next to slate's settings (`history` beside `state.json`), and files over 2 MB are not. A save takes under a millisecond longer, or about 20 ms when it keeps a version (Windows' virus scanner reads the old file first), off to the side so typing never waits; nothing else runs.
 * **Console.** Ctrl+\` (Ctrl+Ö or the § key on Nordic keyboards) opens a Python console whose variables persist between runs. Enter runs the input, or adds a line while a block or bracket is still open. Shift+Enter always adds a line, and Ctrl+Enter always runs. Up and Down browse the history. **Interrupt** stops a run. **Restart** forgets all variables.
 * **Running code from the editor.** Ctrl+Enter runs the selection in the console. Without a selection, it runs the cell at the cursor in a file with `# %%` cells, else the statement at the cursor. Shift+Enter does the same and moves on to the next cell or statement, as in Jupyter. F5 (or Shift+F10) runs the whole file as a script. The script starts with a fresh namespace, as `python file.py` would, and its variables stay in the console afterwards, so you can look at them. Each `# %%` line starts a cell, as in VS Code, Spyder and PyCharm. It gets a rule above it and a ▶ in the gutter that runs it. The console's working directory becomes the file's folder, so relative paths and sibling imports work. Tracebacks give the file's own line numbers, and clicking a `File "...", line N` line opens it there.
@@ -104,6 +115,8 @@ Run `python -m slate --install` again after upgrading or moving Python. `python 
 ## Keys
 
 On macOS, Cmd takes Ctrl's place, as in VS Code: Cmd+P, Cmd+S, Cmd+Enter. Ctrl+\`, Ctrl+Tab and Ctrl+C (interrupt) keep the Ctrl key. Cmd+, also opens the settings, Ctrl+R also runs the file (F5 needs Fn on most Mac keyboards), and Cmd+Option+Left/Right switch tabs. Back and forward are Ctrl+- and Ctrl+Shift+-, as in a Mac's VS Code. Alt is Option.
+
+On Linux the keys are the same as on Windows. Where the desktop keeps Ctrl+Alt+Left/Right for switching workspaces (GNOME does), go back and forward with Alt+Left/Right or the mouse's side buttons.
 
 The settings panel (Ctrl+Alt+S) lists them too, with a Mac's keys on a Mac.
 
@@ -150,9 +163,9 @@ Everything else follows VS Code's keys.
 
 Ctrl+Alt+S, or the ⚙ at the right end of the status bar, opens the settings. Changes apply at once, except where they say otherwise.
 
-* **Console Python.** You can set a default and one per open folder. The list offers each folder's virtual environment (`.venv`, `venv`), your conda environments and the Pythons installed from python.org; **Browse…** picks any other python.exe. Code run from a file (Ctrl+Enter, F5) uses its project's Python. If the console is running another Python, it restarts first, which clears its variables. The console also uses the project's Python when it starts or restarts while one of that project's files is in front. Any Python 3.8 or newer works, and the console imports packages from it. Without a setting, the console uses the Python slate runs on.
+* **Console Python.** You can set a default and one per open folder. The list offers each folder's virtual environment (`.venv`, `venv`), your conda environments and the Pythons installed from python.org (on Linux the system's, pyenv's and uv's); **Browse…** picks any other python.exe. Code run from a file (Ctrl+Enter, F5) uses its project's Python. If the console is running another Python, it restarts first, which clears its variables. The console also uses the project's Python when it starts or restarts while one of that project's files is in front. Any Python 3.8 or newer works, and the console imports packages from it. Without a setting, the console uses the Python slate runs on.
 
-The settings live in `state.json` with your session: `%APPDATA%\slate\state.json` on Windows, `~/Library/Application Support/slate/state.json` on macOS. You can also edit it by hand with slate closed:
+The settings live in `state.json` with your session: `%APPDATA%\slate\state.json` on Windows, `~/Library/Application Support/slate/state.json` on macOS, `~/.config/slate/state.json` on Linux. You can also edit it by hand with slate closed:
 
 * `"console_python"`: the default python.exe for the console, e.g. `"C:\\Users\\you\\miniconda3\\envs\\glyco\\python.exe"`. `"console_pythons"` maps a folder (lower case, as `"c:\\users\\you\\documents\\glycowork"`) to its own.
 * `"style_script"`: the `check_style.py` used for files outside any project with its own (default: `Documents\glycowork\.github\scripts\check_style.py`).
@@ -164,7 +177,7 @@ The settings live in `state.json` with your session: `%APPDATA%\slate\state.json
 
 ## Development
 
-`python tools/smoke.py` opens slate in a real window with a throwaway session and checks the page, linting, the console, running cells, the settings panel, a key and a second launch; it prints the results and exits 1 if any failed. GitHub runs it on macOS and Windows for every push (`.github/workflows/smoke.yml`), and on macOS also installs slate.app and opens a file with it.
+`python tools/smoke.py` opens slate in a real window with a throwaway session and checks the page, linting, the console, running cells, the settings panel, a key and a second launch; it prints the results and exits 1 if any failed. GitHub runs it on macOS, Windows and Ubuntu for every push (`.github/workflows/smoke.yml`), and on macOS also installs slate.app and opens a file with it, as it does with the desktop entry on Ubuntu.
 
 `python tools/shots.py` makes the screenshots in `docs/` the same way, in a throwaway session with glycowork's checkout among its folders (Windows, needs Pillow); run it again when what they show changes.
 

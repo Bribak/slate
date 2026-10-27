@@ -6,7 +6,7 @@ import socket
 import threading
 
 from slate import state
-from slate.system import native
+from slate.system import LINUX, native
 
 
 def info_file():
@@ -19,7 +19,10 @@ def hand_off(paths):
         info = json.loads(info_file().read_text(encoding = 'utf-8'))
         native.allow_foreground(info['pid'])
         with socket.create_connection(('127.0.0.1', info['port']), timeout = 2) as conn:
-            conn.sendall((json.dumps({'token': info['token'], 'open': paths}) + '\n').encode('utf-8'))
+            msg = {'token': info['token'], 'open': paths}
+            if LINUX:
+                msg['activation'] = native.activation()  # lets the running window come forward (slate/linux.py)
+            conn.sendall((json.dumps(msg) + '\n').encode('utf-8'))
             return conn.recv(2) == b'ok'
     except (OSError, ValueError, KeyError):
         return False  # no slate running, or a stale file left by a crash
@@ -44,7 +47,7 @@ def accept(server, token, on_open):
             if not isinstance(msg, dict) or msg.get('token') != token:
                 continue  # the token in the instance file keeps other local programs from driving the editor
             conn.sendall(b'ok')
-        on_open(msg.get('open') or [])
+        on_open(msg.get('open') or [], msg.get('activation'))
 
 
 def release():

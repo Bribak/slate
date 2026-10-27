@@ -1,6 +1,6 @@
 """The Pythons the console can run, for the settings panel's picker: the open folders' virtual environments, conda
 environments, and the installed Pythons: on Windows those registered with it (PEP 514: python.org's installer, Anaconda),
-on macOS python.org's frameworks, Homebrew's, pyenv's and uv's. Versions are read from files next to each interpreter
+on macOS python.org's frameworks, Homebrew's, pyenv's and uv's, on Linux the system's, pyenv's and uv's. Versions are read from files next to each interpreter
 (pyvenv.cfg, conda-meta, the DLL's or the folder's name), so listing them starts no process.
 """
 import os
@@ -8,15 +8,15 @@ import re
 import sys
 from pathlib import Path
 
-from slate.system import MAC, console_python
+from slate.system import LINUX, MAC, WINDOWS, console_python
 
-if not MAC:
+if WINDOWS:
     import winreg
 
 VENVS = ('.venv', 'venv', 'env', '.env')
 CONDA_HOMES = ('miniconda3', 'anaconda3', 'miniforge3', 'mambaforge')
-EXE = Path('bin', 'python') if MAC else Path('python.exe')  # an environment's interpreter, from its folder
-VENV_EXE = Path('bin', 'python') if MAC else Path('Scripts', 'python.exe')
+EXE = Path('python.exe') if WINDOWS else Path('bin', 'python')  # an environment's interpreter, from its folder
+VENV_EXE = Path('Scripts', 'python.exe') if WINDOWS else Path('bin', 'python')
 
 
 def version_of(python):
@@ -79,13 +79,18 @@ def value(key, name):
         return None
 
 
-def installed_mac():
-    """(python, source) for the Pythons installed on a Mac outside conda; /usr/bin/python3 is left out, since running it can
-    ask to install Apple's command line tools."""
+def installed_unix():
+    """(python, source) for the Pythons installed outside conda: on a Mac python.org's and Homebrew's, where /usr/bin/python3
+    is left out, since running it can ask to install Apple's command line tools; on Linux the distribution's (deadsnakes'
+    too) and self-built ones in /usr/local. Then pyenv's and uv's."""
     home = Path.home()
-    found = [(p, 'python.org') for p in sorted(Path('/Library/Frameworks/Python.framework/Versions').glob('3.*/bin/python3'))]
-    for brew in ('/opt/homebrew', '/usr/local'):  # Apple silicon, Intel
-        found += [(p, 'Homebrew') for p in sorted(Path(brew, 'opt').glob('python@3.*/bin/python3'))]
+    if MAC:
+        found = [(p, 'python.org') for p in sorted(Path('/Library/Frameworks/Python.framework/Versions').glob('3.*/bin/python3'))]
+        for brew in ('/opt/homebrew', '/usr/local'):  # Apple silicon, Intel
+            found += [(p, 'Homebrew') for p in sorted(Path(brew, 'opt').glob('python@3.*/bin/python3'))]
+    else:
+        found = [(p, source) for folder, source in (('/usr/bin', 'system'), ('/usr/local/bin', '/usr/local'))
+                 for p in sorted(Path(folder).glob('python3.*')) if re.fullmatch(r'python3\.\d+', p.name)]  # not python3.12-config
     found += [(p, 'pyenv') for p in sorted((home / '.pyenv' / 'versions').glob('*/bin/python'))]
     found += [(p, 'uv') for p in sorted((home / '.local' / 'share' / 'uv' / 'python').glob('*/bin/python3'))]
     return found
@@ -100,6 +105,8 @@ def conda_envs():
         envs += [Path(line.strip()) for line in listed.read_text(encoding = 'utf-8', errors = 'replace').splitlines() if line.strip()]
     if MAC:
         bases = [home, home / 'opt', Path('/opt'), Path('/opt/homebrew/Caskroom/miniforge'), Path('/opt/homebrew/Caskroom/miniconda')]
+    elif LINUX:
+        bases = [home, Path('/opt')]
     else:
         bases = [home, Path(os.environ.get('LOCALAPPDATA', home)), Path(os.environ.get('ProgramData', 'C:/ProgramData'))]
     for base in bases:
@@ -123,7 +130,7 @@ def find(roots):
             add(Path(root) / name / VENV_EXE, f'{Path(root).name}{os.sep}{name}')
     for env in conda_envs():
         add(env / EXE, f'conda: {env.name}')  # a base install by its folder (miniforge3), since apps such as PyMOL bring their own
-    for python, source in installed_mac() if MAC else registered():
+    for python, source in registered() if WINDOWS else installed_unix():
         add(python, source)
     add(console_python(sys.executable), "slate's own")
     return out

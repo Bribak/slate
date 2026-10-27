@@ -1,13 +1,13 @@
-"""Check that slate works in a real window, on Windows and macOS: the page, the bridge, linting, the console, running a
+"""Check that slate works in a real window, on Windows, macOS and Linux: the page, the bridge, linting, the console, running a
 cell, a traceback link, Markdown output with an inline image, the settings panel and its keys, a key, find after a diff
-view, a second launch handing over a file, renaming a file (and moving one to the Trash on macOS), tables, local history
+view, a second launch handing over a file, renaming a file (and moving one to the Trash on macOS and Linux), tables, local history
 and the last edit location.
 
 python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
 
 Runs an isolated session (a temporary folder with its own state.json and a small project), so the real session is
-never touched. .github/workflows/smoke.yml runs it on GitHub's macOS and Windows machines, where nobody can watch the
-window; it is how the macOS side is checked from a Windows desk. Each probe waits at most 60 s for the page.
+never touched. .github/workflows/smoke.yml runs it on GitHub's macOS, Windows and Ubuntu machines (Ubuntu under Xvfb),
+where nobody can watch the window; it is how the macOS and Linux sides are checked from a Windows desk. Each probe waits at most 60 s for the page.
 """
 import json
 import sys
@@ -34,7 +34,7 @@ state.save({'roots': [str(PROJECT)], 'tabs': [{'path': str(DEMO)}], 'active': st
 import webview
 
 from slate import instance
-from slate.system import MAC
+from slate.system import LINUX, MAC, WINDOWS
 
 results, failed = {'platform': sys.platform}, []
 
@@ -86,7 +86,7 @@ def probe(window):
 
 def run(window):
     check('page ready', until(window, 'typeof S !== "undefined" && S.ready && !!S.active && S.active.path'), expect = str(DEMO))
-    check('platform seen by the page', json.loads(js(window, 'JSON.stringify([S.mac, S.sep])') or 'null'), expect = [MAC, '/' if MAC else '\\'])
+    check('platform seen by the page', json.loads(js(window, 'JSON.stringify([S.mac, S.linux, S.sep])') or 'null'), expect = [MAC, LINUX, '\\' if WINDOWS else '/'])
     colors = "S.active.model.getAllDecorations().map((d) => d.options.inlineClassName).filter((c) => /^snfg-(purple|yellow|blue)$/.test(c || '')).length"
     check('glycan residues in SNFG colours', until(window, colors, wait = 10), expect = 3)  # page only, so without glycowork too; only the front file has them
     check('lint marks the SyntaxWarning', until(window, "S.active.linted && (S.active.markers || []).some((m) => m.line === 7) && 1"), expect = 1)  # also style findings where a glycowork checkout is
@@ -121,7 +121,7 @@ def run(window):
     spare.write_text('spare\n', encoding = 'utf-8')
     renamed = js(window, f"api.rename({json.dumps(str(spare))}, 'renamed.txt')")
     check('rename in the tree', renamed and Path(renamed).name == 'renamed.txt' and Path(renamed).is_file() and not spare.exists())
-    if MAC:  # Windows' Recycle Bin is checked by hand: a runner without one would show Windows' delete-for-good question and hang
+    if not WINDOWS:  # Windows' Recycle Bin is checked by hand: a runner without one would show Windows' delete-for-good question and hang
         js(window, f"api.trash({json.dumps(str(PROJECT / 'renamed.txt'))}) || 1")
         check('moved to the Trash', not (PROJECT / 'renamed.txt').exists())
     table = PROJECT / 'table.csv'

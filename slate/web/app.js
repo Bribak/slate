@@ -9,16 +9,18 @@ const S = {
   roots: [], tabs: [], active: null, mru: [], expanded: new Set(), closed: [], history: [],
   view: 'files', sidebarWidth: 260, sidebarOpen: true, consoleHeight: 240, consoleOpen: false, autosave: true,
   ready: false,  // the saved session is restored
-  sep: '\\', mac: false,  // the platform's path separator, and whether this is macOS (Api.get_state)
+  sep: '\\', mac: false, linux: false,  // the platform's path separator, and whether this is macOS or Linux (Api.get_state)
   pathOf: new Map(),  // model uri -> real path, since Monaco's uris lower-case the drive letter
 };
 let api, monaco, editor, consoleInput;
 
-const keyOf = (p) => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+const keyOf = (p) => { const k = p.replace(/\//g, '\\').replace(/\\+$/, ''); return S.linux ? k : k.toLowerCase(); };  // Linux's file names differ by case
 const basename = (p) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
 const dirname = (p) => p.replace(/[\\/][^\\/]*$/, '');
 const join = (a, b) => a.replace(/[\\/]+$/, '') + S.sep + b;
 const nativeSep = (p) => (S.sep === '\\' ? p.replace(/\//g, '\\') : p);  // a path as the platform writes it: C:\a\b, /Users/a/b
+const revealLabel = () => (S.mac ? 'Reveal in Finder' : S.linux ? 'Reveal in Files' : 'Reveal in Explorer');
+const toTrash = () => S.mac || S.linux;  // deleting moves to the Trash; on Windows to the Recycle Bin
 // Key names in slate's own hints as a Mac writes them: Cmd for Ctrl (see comboOf), except Ctrl+` and Ctrl+Tab, which stay Ctrl
 const keyText = (s) => (S.mac ? s.replace(/Ctrl\+(`|Tab)/g, '⌃$1').replace(/Ctrl\+/g, '⌘').replace(/Alt\+/g, '⌥').replace(/Shift\+/g, '⇧') : s);
 const errMsg = (e) => String((e && e.message) || e).replace(/^\w*Error: /, '');
@@ -121,7 +123,8 @@ try {
 window.MonacoEnvironment = {getWorkerUrl() {
   const base = new URL('vendor/', location.href).href;
   const code = `self.MonacoEnvironment = {baseUrl: '${base}'}; importScripts('${base}vs/base/worker/workerMain.js');`;
-  if (/Macintosh/.test(navigator.userAgent)) return URL.createObjectURL(new Blob([code], {type: 'text/javascript'}));  // WebKit runs no data: workers
+  const webkit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome\//.test(navigator.userAgent);  // WKWebView, WebKitGTK; WebView2 also says Chrome
+  if (webkit) return URL.createObjectURL(new Blob([code], {type: 'text/javascript'}));  // WebKit runs no data: workers
   return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(code);
 }};
 require.config({paths: {vs: 'vendor/vs'}});
@@ -135,6 +138,7 @@ function boot() {
     S.python = info.python;
     S.sep = info.sep || '\\';
     S.mac = !!info.mac;
+    S.linux = !!info.linux;
     S.home = info.home;
     monaco = window.monaco;
     init(info.state || {});
@@ -476,7 +480,7 @@ function tabMenu(tab) {
     null,
     ['Copy path', () => navigator.clipboard.writeText(tab.path)],
     ['Reveal in folder tree', () => { activate(tab); revealActiveInTree(); }],
-    [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(tab.path)],
+    [revealLabel(), () => api.reveal(tab.path)],
     null,
     ...(isTableTab(tab) ? [[tab.tableView ? 'Show as text' : 'Show as table', () => toggleTable(tab)]] : []),
     ...(isDirty(tab) ? [['Compare with saved', () => compareSaved(tab)]] : []),
@@ -1890,10 +1894,10 @@ function fileMenu(entry) {
     ['Open', () => openFile(entry.path)],
     null,
     ['Copy path', () => navigator.clipboard.writeText(entry.path)],
-    [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(entry.path)],
+    [revealLabel(), () => api.reveal(entry.path)],
     null,
     ['Rename…', () => renameEntry(entry)],
-    [S.mac ? 'Move to Trash' : 'Delete', () => trashEntry(entry)],
+    [toTrash() ? 'Move to Trash' : 'Delete', () => trashEntry(entry)],
   ];
 }
 
@@ -1903,11 +1907,11 @@ function dirMenu(entry, isRoot, rootIdx) {
     ['New folder…', () => createIn(entry, true)],
     null,
     ['Copy path', () => navigator.clipboard.writeText(entry.path)],
-    [S.mac ? 'Reveal in Finder' : 'Reveal in Explorer', () => api.reveal(join(entry.path, '.'))],
+    [revealLabel(), () => api.reveal(join(entry.path, '.'))],
     null,
   ];
   if (isRoot) items.push(['Remove from slate', () => removeRoot(rootIdx)]);
-  else items.push(['Rename…', () => renameEntry(entry)], [S.mac ? 'Move to Trash' : 'Delete', () => trashEntry(entry)]);
+  else items.push(['Rename…', () => renameEntry(entry)], [toTrash() ? 'Move to Trash' : 'Delete', () => trashEntry(entry)]);
   return items;
 }
 
@@ -1951,7 +1955,7 @@ async function retarget(tab, path) {
 async function trashEntry(entry) {
   const unsaved = S.tabs.filter((t) => under(t.path, entry.path) && isDirty(t));
   const lost = unsaved.length ? `\n\nUnsaved changes in ${unsaved.map((t) => basename(t.path)).join(', ')} will be lost.` : '';
-  if (!confirm(`Move ${entry.name} to ${S.mac ? 'the Trash' : 'the Recycle Bin'}?${lost}`)) return;
+  if (!confirm(`Move ${entry.name} to ${toTrash() ? 'the Trash' : 'the Recycle Bin'}?${lost}`)) return;
   try { await api.trash(entry.path); } catch (e) { toast(errMsg(e)); return; }
   nav.back = nav.back.filter((p) => !under(p.path, entry.path));
   nav.forward = nav.forward.filter((p) => !under(p.path, entry.path));

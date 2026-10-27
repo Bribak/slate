@@ -1,6 +1,7 @@
-# slate in a real window on GitHub's macOS and Windows machines (tools/smoke.py), and on macOS also the app that
-# `python -m slate --install` makes, opened with a file the way Finder opens one. A push to main whose __version__ has no
-# release yet becomes release vX.Y.Z once both pass: that is what slate's update notice offers and installs (slate/update.py).
+# slate in a real window on GitHub's macOS, Windows and Ubuntu machines (tools/smoke.py), and on macOS and Ubuntu also the
+# app that `python -m slate --install` makes, opened with a file the way Finder or the desktop opens one. A push to main whose
+# __version__ has no release yet becomes release vX.Y.Z once all three pass: that is what slate's update notice offers and
+# installs (slate/update.py).
 name: smoke
 
 on:
@@ -13,18 +14,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-latest]
+        os: [macos-14, windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
+        if: runner.os != 'Linux'
         with:
           python-version: '3.12'
+      # Linux as the README installs it: the distribution's GTK, WebKitGTK and PyGObject, and a venv on the system's Python
+      # that sees them (--system-site-packages), so pip builds nothing. Xvfb is the screen. The sysctl lets WebKit's sandbox
+      # (bubblewrap) make user namespaces, in case the runner's AppArmor forbids them
+      - name: GTK, WebKitGTK and a venv (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-gi gir1.2-webkit2-4.1 python3-venv xvfb xauth desktop-file-utils libglib2.0-bin
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
       - name: Install slate as the group does, from this checkout
         run: python -m pip install .
       - name: Smoke test in a real window
-        run: python tools/smoke.py
+        run: ${{ runner.os == 'Linux' && 'xvfb-run -a ' || '' }}python tools/smoke.py
       - name: slate.app opens a file (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -41,6 +54,19 @@ jobs:
           pkill -f 'slate' || true
           python -m slate --uninstall
           test ! -e "$app"
+      - name: The desktop entry opens a file (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python -m slate --install --no-settings
+          entry="$HOME/.local/share/applications/io.github.bribak.slate.desktop"
+          desktop-file-validate "$entry"
+          test -f "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.bribak.slate.png"
+          mkdir -p "$RUNNER_TEMP/project" && echo 'x = 1' > "$RUNNER_TEMP/project/hello.py"
+          state="$HOME/.config/slate/state.json"
+          xvfb-run -a bash -c "gio launch '$entry' '$RUNNER_TEMP/project/hello.py'; for i in \$(seq 1 90); do grep -q hello.py '$state' 2>/dev/null && break; sleep 1; done; pkill -f '[-]m slate' || true"
+          grep -o '"path": "[^"]*hello.py"' "$state"
+          python -m slate --uninstall
+          test ! -e "$entry"
 
   release:
     needs: smoke

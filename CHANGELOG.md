@@ -6,6 +6,8 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- slate now runs on Linux too, in a window made of GTK and WebKitGTK; README.md says what to install first. `python -m slate --install` adds it to the desktop's app menu and to a .py file's Open With.
+
 ## 0.1.6 (2026-10-26)
 
 - slate no longer turns blank for good after a while with big files open (it happened most with change files being written while the Changes view was open): every answer from slate's Python side stayed in the window's memory until it ran out. Should the window's page ever crash again, it reloads by itself with your tabs.

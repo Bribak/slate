@@ -151,7 +151,7 @@ def follow_dpi(hwnd, old_dpi):
     return dpi
 
 
-def bring_to_front(title):
+def bring_to_front(title, token = None):  # token: Linux only (slate/linux.py)
     found = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
