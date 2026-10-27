@@ -6,6 +6,8 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+## 0.2.0 (2026-10-27)
+
 - slate now runs on Linux too, in a window made of GTK and WebKitGTK; README.md says what to install first. `python -m slate --install` adds it to the desktop's app menu and to a .py file's Open With.
 
 ## 0.1.6 (2026-10-26)

@@ -3028,4 +3028,7 @@ function bindUi() {
   dragSash($('console-sash'), (e) => { S.consoleHeight = Math.max(80, Math.min(innerHeight - e.clientY - 22, innerHeight - 150)); layout(); });
   editor.addAction({id: 'slate.reveal', label: 'Reveal in folder tree', keybindings: [monaco.KeyMod.Alt | monaco.KeyMod.Shift | monaco.KeyCode.KeyL],
     contextMenuGroupId: 'navigation', run: revealActiveInTree});
+  // Monaco's Format Document is Shift+Alt+F except on Linux, where it is Ctrl+Shift+I; slate's key is Shift+Alt+F everywhere
+  if (S.linux) editor.addAction({id: 'slate.format', label: 'Reformat to the coding standard', keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
+    precondition: '!slateConsole', run: () => editor.getAction('editor.action.formatDocument').run()});
 }
