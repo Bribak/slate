@@ -7,6 +7,7 @@ under `## Unreleased`; the version bump renames it.
 ## Unreleased
 
 - Many open tabs no longer slow slate down: the tabs it restores are read the first time you look at them, so 29 tabs start as fast as one, with about 70 MB less memory and no 6 s of checking every file in the background.
+- Ctrl+S saves every changed tab, as in PyCharm, not only the one in front.
 
 ## 0.2.0 (2026-10-27)
 

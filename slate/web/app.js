@@ -438,6 +438,13 @@ async function save(tab = S.active, quiet = false) {
   emit('saved', tab.path);
 }
 
+// Ctrl+S, PyCharm's Save All: the front tab, and every other changed one whose file is neither gone nor changed outside
+// slate meanwhile (those wait for their banner's answer, as autosave does)
+function saveAll() {
+  if (S.active) save(S.active);
+  S.tabs.filter((t) => t !== S.active && isDirty(t) && !t.deleted && !t.conflict).forEach((t) => save(t));
+}
+
 function closeTab(tab, {force = false} = {}) {
   if (!tab) return;
   if (!force && isDirty(tab) && !confirm(`${basename(tab.path)} has unsaved changes. Close it anyway?`)) return;
@@ -2958,7 +2965,7 @@ const KEYS = [
   {what: 'folder tree', keys: {'ctrl+shift+e': () => showView('files')}},
   {what: 'show the current file in the tree', keys: {'shift+alt+l': () => revealActiveInTree()}},
   {what: 'show or hide the sidebar', keys: {'ctrl+b': () => { S.sidebarOpen = !S.sidebarOpen; layout(); persist(); }}},
-  {what: 'save', keys: {'ctrl+s': () => save()}},
+  {what: 'save every changed tab', keys: {'ctrl+s': () => saveAll()}},
   {what: 'close the tab', keys: {'ctrl+w': () => closeTab(S.active), 'ctrl+f4': () => closeTab(S.active)}, mac: {'ctrl+w': () => closeTab(S.active)}},
   {what: 'reopen a closed tab', keys: {'ctrl+shift+t': () => { const p = S.closed.pop(); if (p) { openFile(p); persist(); } }}},
   {what: 'previous tab (press Tab again, still holding Ctrl, to go further back)', keys: {'ctrl+tab': () => mruStep(1), 'ctrl+shift+tab': () => mruStep(-1)},

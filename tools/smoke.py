@@ -6,10 +6,11 @@ and the last edit location.
 python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
 
 Runs an isolated session (a temporary folder with its own state.json and a small project), so the real session is
-never touched. .github/workflows/smoke.yml runs it on GitHub's macOS, Windows and Ubuntu machines (Ubuntu under Xvfb),
+never touched, and removed again at the end. .github/workflows/smoke.yml runs it on GitHub's macOS, Windows and Ubuntu machines (Ubuntu under Xvfb),
 where nobody can watch the window; it is how the macOS and Linux sides are checked from a Windows desk. Each probe waits at most 60 s for the page.
 """
 import json
+import shutil
 import sys
 import tempfile
 import threading
@@ -169,4 +170,11 @@ main()
 results['seconds'] = round(time.time() - T0, 1)
 results['failed'] = failed
 print(json.dumps(results), flush = True)
+for _ in range(20):  # WebView2's processes let go of the profile in HOME a moment after the window closes
+    shutil.rmtree(HOME, ignore_errors = True)
+    if not HOME.exists():
+        break
+    time.sleep(0.5)
+else:
+    print(f'smoke: could not remove {HOME}', file = sys.stderr, flush = True)
 sys.exit(1 if failed else 0)

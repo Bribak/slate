@@ -128,7 +128,7 @@ The settings panel (Ctrl+Alt+S) lists them too, with a Mac's keys on a Mac.
 | Shift+Alt+L | show the current file in the tree |
 | Ctrl+B | show/hide the sidebar |
 | Ctrl+\` | show/hide the console |
-| Ctrl+S | save |
+| Ctrl+S | save every changed tab |
 | Ctrl+W | close tab |
 | Ctrl+Shift+T | reopen closed tab |
 | Ctrl+Tab | previous tab (hold Ctrl and press Tab again to go further back) |
