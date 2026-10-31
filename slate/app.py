@@ -26,6 +26,7 @@ SETTINGS = ('console_python', 'console_pythons', 'style_script', 'gpu', 'usage_l
 MIME_TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.ico': 'image/x-icon', '.png': 'image/png'}
 PORT = 42001  # pywebview's default for its page server: a fixed port keeps the page's origin, and with it WebView2's caches (Monaco's compiled code), across sessions
 STALL = 15  # seconds after the window shows by which the page has asked for its state (it takes about 2)
+RELOADS = 3  # times _watch_page loads a stalled page again, STALL seconds apart
 
 
 def project_key(root):
@@ -347,22 +348,24 @@ class Api:
         threading.Thread(target = self._watch_page, daemon = True).start()
 
     def _watch_page(self):
-        """Load the page once more if it has not asked for its state STALL seconds after the window showed, rather than leave
-        the window blank, and log whether its server answers (page_stalled)."""
-        if self._asked.wait(STALL) or self._started is None:
-            return
+        """Load the page again each STALL seconds after the window showed, up to RELOADS times, while it has not asked for its
+        state, rather than leave the window blank, and log whether its server answers (page_stalled). Once was not enough on
+        macOS 15 (CI, 2026-10-31): the server answered neither the first load nor the reload 17 s later."""
         from urllib.request import urlopen
         url = f'http://127.0.0.1:{self._port or PORT}/index.html'
-        try:
-            with urlopen(url, timeout = 3) as response:
-                served = response.status
-        except OSError as e:
-            served = repr(e)
-        usage.record('page_stalled', seconds = STALL, port = self._port, served = served)
-        try:
-            self._window.load_url(url)
-        except Exception:
-            pass  # the window closed meanwhile
+        for attempt in range(1, RELOADS + 1):
+            if self._asked.wait(STALL) or self._started is None:
+                return
+            try:
+                with urlopen(url, timeout = 3) as response:
+                    served = response.status
+            except OSError as e:
+                served = repr(e)
+            usage.record('page_stalled', seconds = STALL * attempt, port = self._port, served = served)
+            try:
+                self._window.load_url(url)
+            except Exception:
+                return  # the window closed meanwhile
 
     def _on_moved(self, x = None, y = None):
         if self._dpi:
@@ -396,14 +399,25 @@ def serve_pages():
       heuristic (a tenth of the file's age at download) and could run the old page after an update. 'no-cache' makes it ask
       each time; unchanged files come back as 304, so its compiled-code cache still applies.
     * The content type comes from MIME_TYPES: mimetypes would read the Windows registry on the first request, which held up
-      index.html by 105 ms."""
+      index.html by 105 ms.
+    * The server is named after its address. http.server looks its address up in DNS (socket.getfqdn) after binding and before
+      it listens, and where that lookup hangs nothing answers the page: on GitHub's macOS 15 machine (2026-10-31) slate's own
+      request to its page server timed out 15 s after the window showed, and so did WebKit's load and its reload. The name only
+      goes into the WSGI environment's SERVER_NAME, which nothing here reads."""
     import bottle
+    import http.server
+    import socketserver
     static_file = bottle.static_file
 
     def serve(filename, *a, **kw):
         kw.setdefault('mimetype', MIME_TYPES.get(os.path.splitext(filename)[1].lower(), True))
         return static_file(filename, *a, headers = {'Cache-Control': 'no-cache'}, **kw)
     bottle.static_file = serve
+
+    def server_bind(server):
+        socketserver.TCPServer.server_bind(server)
+        server.server_name, server.server_port = server.server_address[:2]
+    http.server.HTTPServer.server_bind = server_bind
 
 
 def server_port():

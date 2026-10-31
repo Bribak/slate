@@ -47,10 +47,13 @@ jobs:
           plutil -p "$app/Contents/Info.plist" | grep -E 'CFBundleIdentifier|public.python-script'
           codesign --verify "$app"
           mkdir -p "$RUNNER_TEMP/project" && echo 'x = 1' > "$RUNNER_TEMP/project/hello.py"
+          # what http.server's DNS lookup of its own address costs here (app.serve_pages skips it since 2026-10-31)
+          python -c "import socket, time; t = time.time(); n = socket.getfqdn('127.0.0.1'); print(f'getfqdn(127.0.0.1) = {n} in {time.time() - t:.1f} s')"
           open -a "$app" "$RUNNER_TEMP/project/hello.py"
           state="$HOME/Library/Application Support/slate/state.json"
           for i in $(seq 1 90); do grep -q hello.py "$state" 2>/dev/null && break; sleep 1; done
           if ! grep -q hello.py "$state" 2>/dev/null; then
+            set +e +o pipefail  # every check below runs, whatever the one before it found
             # why the app did not open the file: slate's own output (the applet logs it), its processes, the system's log
             echo '--- ~/Library/Logs/slate.log'; cat "$HOME/Library/Logs/slate.log" 2>/dev/null || echo '(none)'
             echo '--- processes'; ps -axo pid,ppid,etime,command | grep -iE '[s]late|[a]pplet' || echo '(none)'
@@ -66,7 +69,8 @@ jobs:
             curl -sS -m 5 -o /dev/null -w '127.0.0.1: HTTP %{http_code} in %{time_total} s\n' "http://127.0.0.1:$port/index.html" || true
             curl -sS -m 5 -o /dev/null -w 'localhost: HTTP %{http_code} in %{time_total} s\n' "http://localhost:$port/index.html" || true
             pid=$(pgrep -f 'm slate' | head -1)
-            if [ -n "$pid" ]; then echo "--- where slate ($pid) waits"; sample "$pid" 2 2>/dev/null | grep -iE 'Thread_|accept|select|poll|recv|serve_forever|kevent|wait' | head -60; fi
+            if [ -n "$pid" ]; then echo "--- where slate ($pid) waits"; sample "$pid" 2 2>/dev/null | grep -iE 'Thread_|accept|select|poll|recv|serve_forever|kevent|wait|getaddrinfo|gethostbyaddr|getnameinfo' | head -60; fi
+            set -e -o pipefail  # and the check below fails the step again
           fi
           grep -o '"path": "[^"]*hello.py"' "$state"
           pkill -f 'slate' || true

@@ -16,6 +16,7 @@ under `## Unreleased`; the version bump renames it.
 - ▶ Analyze in the table view: glycowork's differential expression, its volcano plot and the top results in the console, in one click, as code you can change and run again.
 - A pandas DataFrame in the console shows as a table, with its glycans drawn.
 - glycowork's volcano plots and networks with SNFG drawings show sharp in the console, where they came out blank.
+- slate starts its page without asking DNS for the computer's own name, which on some Macs kept the window blank; a page that does not load is now tried again up to three times.
 
 ## 0.2.1 (2026-10-31)
 
