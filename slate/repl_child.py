@@ -16,11 +16,14 @@ import _thread
 import ast
 import base64
 import builtins
+import copy
 import importlib.machinery
+import importlib.util
 import io
 import json
 import linecache
 import os
+import re
 import socket
 import struct
 import sys
@@ -66,8 +69,9 @@ def no_input(prompt = ''):
     raise RuntimeError('input() is not supported in the slate console')
 
 
-def send_image(mime, data, width = None, height = None):
-    """data: bytes, or SVG text; width and height in CSS pixels (PNG and JPEG only, from the image when not given)."""
+def send_image(mime, data, width = None, height = None, figure = False):
+    """data: bytes, or SVG text; width and height in CSS pixels (PNG and JPEG only, from the image when not given).
+    figure: a matplotlib figure, which the page shows as a die-cut sticker like the glycan drawings."""
     if isinstance(data, str):
         data = data.encode('utf-8')
     if mime == 'image/png' and width is None and data[12:16] == b'IHDR':
@@ -76,7 +80,7 @@ def send_image(mime, data, width = None, height = None):
     if len(encoded) > MAX_IMAGE:
         print(f'({mime} of {len(data) // 1_000_000} MB not shown)')
         return
-    send({'img': {'mime': mime, 'data': encoded, 'width': width, 'height': height}})
+    send({'img': {'mime': mime, 'data': encoded, 'width': width, 'height': height, **({'figure': True} if figure else {})}})
 
 
 def send_figure(fig):
@@ -84,7 +88,7 @@ def send_figure(fig):
     fig.savefig(buf, format = 'png', dpi = fig.dpi * 2, bbox_inches = 'tight')  # twice the pixels, shown at half: sharp on high-DPI screens
     data = buf.getvalue()
     width, height = struct.unpack('>II', data[16:24])
-    send_image('image/png', data, width = width // 2, height = height // 2)
+    send_image('image/png', data, width = width // 2, height = height // 2, figure = True)
 
 
 def show_figures(*args, **kwargs):
@@ -115,9 +119,112 @@ def inline_backend():
     sys.modules['slate_inline'] = module
 
 
+def glycan_sticker(value):
+    """(svg, width, height) for a GlycoDraw drawing (glycowork's GlycanDrawing, 1.10.1+) as a die-cut sticker, else None.
+    Its _repr_png_ draws on white, which sat as a white box on the console's dark background, and glycan drawings on a dark
+    page are stickers in slate. A plain drawing's canvas is widened by the difference between GlycoDraw's margins for a
+    sticker and for a plain or shadowed drawing (0.45, 0.2 and 0.35 of dim), since the cut and its shadow need that room:
+    switched to sticker without it, they were clipped flat at the edges. The result equals GlycoDraw(..., sticker = True)
+    but for a filter's id, which differs between two such calls too. The user's own drawing is left as it was."""
+    kind = type(value)
+    if kind.__name__ != 'GlycanDrawing' or not kind.__module__.startswith('glycowork.') or not hasattr(value, 'sticker'):
+        return None
+    try:
+        drawing = value
+        if not drawing.sticker:
+            canvas = copy.copy(drawing.drawing_obj)  # a drawsvg Drawing; its elements are shared, not changed
+            extra = drawing.dim * (0.45 - (0.35 if drawing.shadow else 0.2))
+            x, y, w, h = canvas.view_box
+            canvas.view_box = (x - extra, y - extra, w + 2 * extra, h + 2 * extra)
+            canvas.width, canvas.height = canvas.width + 2 * extra, canvas.height + 2 * extra
+            drawing = copy.copy(drawing)
+            drawing.drawing_obj, drawing.sticker, drawing.shadow = canvas, True, False
+        return drawing.as_standalone_svg(), round(drawing.drawing_obj.width), round(drawing.drawing_obj.height)
+    except Exception:
+        return None  # another glycowork's internals: shown as glycowork shows it
+
+
+GLYCAN_TEXT = re.compile(r'[A-Za-z[{](?:[A-Za-z0-9?\-.|/[\]{}]|\([^()\s]*\))*')  # glycans.IN_TEXT: no spaces, commas only inside a linkage
+LINKAGE = re.compile(r'\([abo?][\d?]?-[\d?][\d?|/,]*\)')  # glycans.LINKAGE: what makes a word a glycan
+AS_IT_IS = re.compile(r'```.*?```|`[^`\n]*`|<img\s[^>]*>', re.S)  # code, and drawings already in the text
+PLAIN_DRAWING = re.compile(r'<img src="data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)" alt="SNFG diagram of (\S+) drawn in (horizontal|vertical) '
+                           r'(standard|compact) style (with|without) linkage labels\." height="(\d+)"[^>]*>')  # GlycoDraw's as_markdown(), its default alt text
+MAX_DRAWN = 50  # distinct glycans drawn per Markdown text
+
+
+def glycodraw():
+    """GlycoDraw from this Python's glycowork, imported if it is installed but not yet imported (once, about 1.3 s), else None."""
+    module = sys.modules.get('glycowork.motif.draw')
+    if module is None:
+        try:
+            if importlib.util.find_spec('glycowork') is None:
+                return None
+            import glycowork.motif.draw as module
+        except Exception:
+            return None
+    return getattr(module, 'GlycoDraw', None)
+
+
+def markdown_stickers(md):
+    """Markdown with its glycans as GlycoDraw's die-cut stickers, as drawings sit on slate's dark background: a glycan written
+    as text (the editor's rule: at least one linkage, no spaces, not in code) becomes its sticker, as with as_markdown(),
+    which keeps the string as the drawing's alt text, and a plain
+    as_markdown() drawing is redrawn as one from its alt text, which names the glycan and how it was drawn, at the same
+    symbol size (its height over the plain SVG's, times GlycoDraw's dim of 50). Text without a linkage, a Python without
+    glycowork (1.11.1+, for as_markdown) or anything that fails leaves the Markdown as it is."""
+    if not LINKAGE.search(md):
+        return md
+    GlycoDraw = glycodraw()
+    if GlycoDraw is None:
+        return md
+    drawn = {}
+
+    def sticker(glycan, size = 14, **style):
+        key = (glycan, size, tuple(sorted(style.items())))
+        if key not in drawn and len(drawn) < MAX_DRAWN:
+            try:
+                drawn[key] = GlycoDraw(glycan, sticker = True, suppress = True, **style).as_markdown(size = size)
+            except Exception:
+                drawn[key] = None  # not a glycan GlycoDraw reads, or a glycowork without stickers or as_markdown
+        return drawn.get(key)
+
+    def text(m):
+        glycan = m.group().rstrip('.,;:')  # the end of a sentence
+        if not LINKAGE.search(glycan) or glycan.count('(') != glycan.count(')') or glycan.count('[') != glycan.count(']'):
+            return m.group()
+        drawing = sticker(glycan)
+        return m.group() if drawing is None else drawing + m.group()[len(glycan):]
+
+    def as_it_is(m):
+        plain = PLAIN_DRAWING.fullmatch(m.group())
+        if plain is None:
+            return m.group()
+        svg = base64.b64decode(plain.group(1)).decode('utf-8', 'replace')
+        height = re.search(r'<svg[^>]*?\sheight="([\d.]+)', svg)
+        if 'feDropShadow' in svg or height is None:
+            return m.group()  # already a sticker
+        size = int(plain.group(6)) * 50 / float(height.group(1))
+        drawing = sticker(plain.group(2), size = size, vertical = plain.group(3) == 'vertical', compact = plain.group(4) == 'compact',
+                          show_linkage = plain.group(5) == 'with')
+        return drawing or m.group()
+
+    try:
+        out, last = [], 0
+        for m in AS_IT_IS.finditer(md):
+            out += [GLYCAN_TEXT.sub(text, md[last:m.start()]), as_it_is(m)]
+            last = m.end()
+        return ''.join(out) + GLYCAN_TEXT.sub(text, md[last:])
+    except Exception:
+        return md
+
+
 def show_rich(value):
     """Show the value if it can show itself (Jupyter's _repr_*_ methods, in JupyterLab's order of preference, or a matplotlib
-    figure); False otherwise."""
+    figure); False otherwise. A GlycoDraw drawing shows as a die-cut sticker (glycan_sticker)."""
+    sticker = glycan_sticker(value)
+    if sticker is not None:
+        send_image('image/svg+xml', sticker[0], width = sticker[1], height = sticker[2])
+        return True
     pyplot = sys.modules.get('matplotlib.pyplot')
     if hasattr(value, 'savefig') and hasattr(value, 'number') and pyplot is not None and value.number in pyplot.get_fignums():
         return True  # a pyplot figure: shown at the end of the run with the others
@@ -140,7 +247,7 @@ def show_rich(value):
             if len(data) > MAX_IMAGE:
                 print(f'(Markdown of {len(data) // 1_000_000} MB not shown)')
             else:
-                send({'md': data})
+                send({'md': markdown_stickers(data)})
             return True
         if data:
             send_image(mime, data, width = meta.get('width'), height = meta.get('height'))

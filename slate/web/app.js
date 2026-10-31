@@ -2386,10 +2386,10 @@ function appendOut(text, cls) {
 // Figures and drawings from the console (repl_child.py). An <img> never runs an SVG's scripts. Only the newest
 // MAX_IMAGES stay, so a plotting loop cannot fill the page's memory.
 const MAX_IMAGES = 40;
-function appendImage({mime, data, width, height}) {
+function appendImage({mime, data, width, height, figure}) {
   const out = $('console-out');
   const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 30;
-  const img = el('img', 'plot');
+  const img = el('img', figure ? 'plot figure' : 'plot');  // a matplotlib figure: a die-cut sticker, like the glycan drawings
   img.src = `data:${mime};base64,${data}`;
   if (width) img.style.width = width + 'px';
   if (width && height) img.style.aspectRatio = `${width} / ${height}`;  // keeps its place while it decodes, so scrolling does not jump
@@ -2727,7 +2727,8 @@ function markdownHtml(md, images = false) {
     const height = tag.match(/\sheight="(\d+(?:\.\d+)?)"/i), alt = tag.match(/\salt="([^"]*)"/i);
     let sticker = false;  // GlycoDraw(sticker = True) brings its own white outline; other drawings get a white chip, since GlycoDraw draws charcoal on nothing
     try { sticker = src[2] === 'svg+xml' && atob(src[3]).includes('feDropShadow'); } catch (e) { }
-    return keep(`<img class="${sticker ? 'sticker' : 'chip'}" src="${src[1]}" alt="${escapeHtml(alt ? alt[1] : '')}"${height ? ` style="height: ${height[1]}px"` : ''}>`);
+    const text = escapeHtml(alt ? alt[1] : '');  // GlycoDraw's names the glycan, also when the console drew it from text (repl_child.markdown_stickers)
+    return keep(`<img class="${sticker ? 'sticker' : 'chip'}" src="${src[1]}" alt="${text}" title="${text}"${height ? ` style="height: ${height[1]}px"` : ''}>`);
   });
   const inline = (s) => escapeHtml(s.replace(/`([^`]+)`/g, (m, code) => keep(`<code>${escapeHtml(code)}</code>`)))
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\*([^*\s][^*]*)\*/g, '<i>$1</i>').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');

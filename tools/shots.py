@@ -68,7 +68,7 @@ plt.show()
 
 # %% in a sentence
 from IPython.display import Markdown
-Markdown(f'The most abundant glycan, {GlycoDraw(best, sticker = True).as_markdown()}, is **{abundance[best]}%** of the signal.')
+Markdown(f'The most abundant glycan, {best}, is **{abundance[best]}%** of the signal.')
 '''
 LINES = DEMO_TEXT.split('\n')
 SLEX_LINE = next(n for n, line in enumerate(LINES, 1) if 'Fuc(a1-3)' in line)
@@ -93,7 +93,7 @@ TABLE.write_text('glycan,H1,H2,H3,H4,P1,P2,P3,P4\n' + ''.join(f'{g},{",".join(ma
 scale = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100  # the main monitor's, where the window opens
 x0, y0 = round(80 * scale), round(60 * scale)
 state.save({'roots': [str(PROJECT), str(GLYCOWORK)], 'tabs': [{'path': str(DEMO)}], 'active': str(DEMO), 'autosave': False, 'consoleOpen': False,
-            'usage_log': False, 'update_check': False, 'sidebarWidth': 250, 'consoleHeight': 470,
+            'usage_log': False, 'update_check': False, 'sidebarWidth': 250, 'consoleHeight': 500,
             'placement': {'rect': [x0, y0, x0 + round(W * scale) + 16, y0 + round(H * scale) + 40], 'maximized': False}})
 import webview
 
@@ -274,7 +274,8 @@ def run(window):
         js(window, 'runAtCursor(true) || 1')
         time.sleep(0.5)
     if until(window, "document.querySelectorAll('#console-out img.plot').length >= 2 && document.querySelector('#console-out div.md img') && !document.querySelector('#console-busy:not(.hidden)') && 1", 'console figures', wait = 90):
-        js(window, "(editor.revealLineNearTop(27), $('console-out').scrollTop = 1e6, 1)")
+        # from the second cell's header, without the caret: run, the cells leave it on the last line, which shows only in half
+        js(window, "(editor.setPosition({lineNumber: 20, column: 1}), editor.setScrollTop(editor.getTopForLineNumber(20)), document.activeElement.blur(), $('console-out').scrollTop = 1e6, 1)")
         time.sleep(1)  # without it, PrintWindow once caught the editor and the console header half repainted
         shoot(window, 'console', f"{REGION}(['#main'], 0, null)")
     else:
@@ -311,11 +312,20 @@ main()
 print('\n'.join(written), flush = True)
 if failed:
     print('failed:', '; '.join(failed), flush = True)
-for _ in range(20):  # as in smoke.py: WebView2's processes let go of the profile in HOME a moment after the window closes
+for _ in range(40):  # as in smoke.py: WebView2's processes let go of the profile in HOME a moment after the window closes, and the
+    # console's Python of the script's folder, its working directory, up to about 15 s later (with numpy and matplotlib loaded)
     shutil.rmtree(HOME, ignore_errors = True)
     if not HOME.exists():
         break
     time.sleep(0.5)
 else:
-    print(f'shots: could not remove {HOME}', file = sys.stderr, flush = True)
+    import psutil
+    holders = []
+    for proc in psutil.process_iter(['pid', 'name', 'ppid', 'cmdline']):
+        try:
+            if proc.cwd().startswith(str(HOME)):
+                holders.append(f"{proc.info['pid']} (parent {proc.info['ppid']}) {' '.join(proc.info['cmdline'] or [proc.info['name']])[:120]}")
+        except (psutil.Error, OSError):
+            pass
+    print(f'shots: could not remove {HOME}; working there: {holders or "nobody"}', file = sys.stderr, flush = True)
 sys.exit(1 if failed else 0)

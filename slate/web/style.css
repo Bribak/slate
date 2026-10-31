@@ -118,6 +118,9 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #console-out .echo { display: block; }
 #console-out .echo .p { color: #606366; }
 #console-out img.plot { display: block; max-width: 100%; height: auto; margin: 4px 0; border-radius: 2px; }
+/* A figure as glycorender cuts a sticker: a rectangle's die cut has corners as round as the cut is wide (0.18 of a symbol, about
+   9 px at GlycoDraw's size), and the cut casts the drop shadow (0.03/0.05 of a symbol down and right, blur 0.07, 38% black) */
+#console-out img.plot.figure { border-radius: 9px; box-shadow: 1.5px 2.5px 7px #00000061; margin: 4px 4px 8px; max-width: calc(100% - 10px); }
 #console-out .md { margin: 4px 0; font: 14px/1.6 var(--ui); color: #D4D4D4; white-space: normal; word-break: normal; }
 #console-out .md p, #console-out .md ul, #console-out .md ol { margin: 4px 0; }
 #console-out .md ul, #console-out .md ol { padding-left: 22px; }

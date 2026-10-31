@@ -6,6 +6,10 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- A GlycoDraw drawing shown in the console is a die-cut sticker on the dark background, instead of sitting on a white box.
+- Markdown in the console draws the glycans written in its text as stickers, so `Markdown(f'{glycan} binds')` is enough; a drawing from `as_markdown()` becomes a sticker too, and glycans in `code` stay text.
+- Plots in the console are cut out as stickers as well: rounded corners and a soft shadow.
+
 ## 0.2.1 (2026-10-31)
 
 - Many open tabs no longer slow slate down: the tabs it restores are read the first time you look at them, so 29 tabs start as fast as one, with about 70 MB less memory and no 6 s of checking every file in the background.
