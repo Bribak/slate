@@ -56,6 +56,17 @@ jobs:
             echo '--- processes'; ps -axo pid,ppid,etime,command | grep -iE '[s]late|[a]pplet' || echo '(none)'
             echo '--- system log'
             log show --last 3m --style compact --predicate 'process == "applet" OR process CONTAINS[c] "python" OR eventMessage CONTAINS[c] "slate.app"' 2>/dev/null | tail -80
+            # the macOS 15 run of 2026-10-31 showed WebKit's requests to slate's page server timing out (-1001): does the server
+            # answer from here, is it listening, and where do slate's threads wait?
+            usage="$HOME/Library/Application Support/slate/usage.jsonl"
+            echo '--- usage log'; cat "$usage" 2>/dev/null || echo '(none)'
+            port=$(grep -o '"kind": "port", "port": [0-9]*' "$usage" 2>/dev/null | tail -1 | grep -o '[0-9]*$'); port=${port:-42001}
+            echo '--- listening'; lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -iE 'python|COMMAND' || echo '(none)'
+            echo "--- the page server on port $port, asked from the shell"
+            curl -sS -m 5 -o /dev/null -w '127.0.0.1: HTTP %{http_code} in %{time_total} s\n' "http://127.0.0.1:$port/index.html" || true
+            curl -sS -m 5 -o /dev/null -w 'localhost: HTTP %{http_code} in %{time_total} s\n' "http://localhost:$port/index.html" || true
+            pid=$(pgrep -f 'm slate' | head -1)
+            if [ -n "$pid" ]; then echo "--- where slate ($pid) waits"; sample "$pid" 2 2>/dev/null | grep -iE 'Thread_|accept|select|poll|recv|serve_forever|kevent|wait' | head -60; fi
           fi
           grep -o '"path": "[^"]*hello.py"' "$state"
           pkill -f 'slate' || true
