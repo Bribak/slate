@@ -24,6 +24,8 @@ LEAN = ('--enable-low-end-device-mode --disable-rgba-4444-textures --force-gpu-m
 SOFTWARE = '--disable-gpu --disable-gpu-compositing'
 SETTINGS = ('console_python', 'console_pythons', 'style_script', 'gpu', 'usage_log', 'glycan_drawings', 'update_check', 'reference_lookup')  # set_setting's keys
 MIME_TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.ico': 'image/x-icon', '.png': 'image/png'}
+PORT = 42001  # pywebview's default for its page server: a fixed port keeps the page's origin, and with it WebView2's caches (Monaco's compiled code), across sessions
+STALL = 15  # seconds after the window shows by which the page has asked for its state (it takes about 2)
 
 
 def project_key(root):
@@ -42,9 +44,11 @@ class Api:
         self._opens, self._ready, self._lock = [], False, threading.Lock()
         self._hwnd, self._dpi = None, None
         self._started = time.time()
+        self._port, self._asked = None, threading.Event()
 
     # session
     def get_state(self):
+        self._asked.set()  # the page's first call
         return {'state': self._state, 'python': sys.version.split()[0], 'version': __version__, 'home': str(Path.home()), 'sep': os.sep, 'mac': MAC, 'linux': LINUX}
 
     def save_state(self, new_state):
@@ -259,7 +263,7 @@ class Api:
         return self._drawer.draw(list(names), self._state.get('console_python'), list(roots))
 
     def glycan_full(self, glycan, roots = ()):
-        """{'svg': GlycoDraw's full drawing, with linkages} for the hover, or {'error': message}."""
+        """{'svg', 'sticker'}: GlycoDraw's full drawing, with linkages, for the hover, or {'error': message}."""
         return self._drawer.request({'op': 'full', 'glycan': glycan}, self._state.get('console_python'), list(roots))
 
     def glycan_info(self, glycan, roots = ()):
@@ -334,6 +338,25 @@ class Api:
         usage.record('shown', dpi = self._dpi, seconds = round(time.time() - self._started, 2))
         if (self._state.get('placement') or {}).get('maximized'):
             self._window.maximize()
+        threading.Thread(target = self._watch_page, daemon = True).start()
+
+    def _watch_page(self):
+        """Load the page once more if it has not asked for its state STALL seconds after the window showed, rather than leave
+        the window blank, and log whether its server answers (page_stalled)."""
+        if self._asked.wait(STALL) or self._started is None:
+            return
+        from urllib.request import urlopen
+        url = f'http://127.0.0.1:{self._port or PORT}/index.html'
+        try:
+            with urlopen(url, timeout = 3) as response:
+                served = response.status
+        except OSError as e:
+            served = repr(e)
+        usage.record('page_stalled', seconds = STALL, port = self._port, served = served)
+        try:
+            self._window.load_url(url)
+        except Exception:
+            pass  # the window closed meanwhile
 
     def _on_moved(self, x = None, y = None):
         if self._dpi:
@@ -377,6 +400,25 @@ def serve_pages():
     bottle.static_file = serve
 
 
+def server_port():
+    """The port for pywebview's page server: PORT, or the next one nobody listens on. pywebview binds with SO_REUSEADDR, which
+    on Windows lets a second server listen on a port already in use, and the page's requests then go to the first one: a
+    process still listening there, such as a slate that is still shutting down, leaves the new window blank (2026-10-31: blank
+    on reopening 8 s after closing a two-day session; reproduced with a listener that never answers, 3 of 3 requests hung).
+    A plain bind fails while anything listens on the port, but not for the TIME_WAIT connections a closed slate leaves."""
+    import socket
+    for port in range(PORT, PORT + 20):
+        with socket.socket() as s:
+            if not WINDOWS:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # elsewhere TIME_WAIT would block a plain bind, and a listener blocks this one too
+            try:
+                s.bind(('127.0.0.1', port))
+                return port
+            except OSError:
+                continue
+    return None  # pywebview's default
+
+
 def main():
     if '--install' in sys.argv or '--uninstall' in sys.argv:  # --no-settings: an update refreshing slate.exe or slate.app (slate/update.py)
         installer = system.installer()
@@ -418,5 +460,8 @@ def main():
     window.events.restored += api._on_restored
     window.events.closing += api._on_closing
     window.events.closed += api._shutdown
-    webview.start(gui = 'gtk' if LINUX else None, http_server = True, debug = '--debug' in sys.argv, private_mode = False,
+    api._port = server_port()
+    if api._port != PORT:
+        usage.record('port', port = api._port)
+    webview.start(gui = 'gtk' if LINUX else None, http_server = True, http_port = api._port, debug = '--debug' in sys.argv, private_mode = False,
                   storage_path = str(state.STATE_FILE.parent / 'webview'), icon = str(WEB / ('slate.ico' if WINDOWS else 'slate.png')))  # the Dock icon on macOS

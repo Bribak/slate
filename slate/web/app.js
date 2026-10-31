@@ -1144,15 +1144,16 @@ function glycanDrawing([svg, sticker]) {
 }
 
 // The hover's full drawing, with linkages, asked for when a glycan is first hovered: drawing it for every glycan on screen
-// took half the drawing time and 40% of the page's drawing data for hovers that mostly never come. On white, because
-// GlycoDraw draws its lines in charcoal on nothing. Cached per glycan, the newest GLYCANS_KEPT.
+// took half the drawing time and 40% of the page's drawing data for hovers that mostly never come. A die-cut sticker, as
+// next to the string; before glycowork 1.10.1 the plain drawing on white, since GlycoDraw draws charcoal lines on nothing.
+// Cached per glycan, the newest GLYCANS_KEPT.
 function glycanFull(glycan) {
   if (!glycans.full.has(glycan)) {
     glycans.full.set(glycan, api.glycan_full(glycan, S.roots).then((r) => {
       if (!r || !r.svg) return null;
       const [x, y, w, h] = viewBox(r.svg);
-      const onWhite = r.svg.replace(/<svg[^>]*>/, (open) => `${open}<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#FFFFFF"/>`);
-      return {url: svgUrl(onWhite), size: [w, h]};
+      const svg = r.sticker ? r.svg : r.svg.replace(/<svg[^>]*>/, (open) => `${open}<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#FFFFFF"/>`);
+      return {url: svgUrl(svg), size: [w, h]};
     }, () => null));
     for (const g of glycans.full.keys()) { if (glycans.full.size <= GLYCANS_KEPT) break; glycans.full.delete(g); }
   }
@@ -1639,8 +1640,9 @@ function showTable(tab) {
     if (want.length && !glycans.off) drawGlycans(want).then((fresh) => fresh && render(true));
   };
   let frame = 0;
-  scroll.addEventListener('scroll', () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); }); });
-  new ResizeObserver(() => render()).observe(scroll);
+  const renderSoon = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); }); };
+  scroll.addEventListener('scroll', renderSoon);
+  new ResizeObserver(renderSoon).observe(scroll);  // in the next frame: changing the layout inside the callback is a ResizeObserver loop
 
   const showRow = async (r) => {
     selected = r;
@@ -1919,8 +1921,12 @@ async function revealActiveInTree() {
 
 // items: [label, fn] pairs, with null between groups
 
+let menuFor = null;  // the tab, tree row or image whose menu is open, outlined meanwhile as in VS Code
 function showMenu(ev, items) {
   ev.preventDefault();
+  hideMenu();
+  menuFor = ev.currentTarget instanceof Element ? ev.currentTarget : null;
+  if (menuFor) menuFor.classList.add('menu-for');
   const m = $('menu');
   m.innerHTML = '';
   items.forEach((item, i) => {
@@ -1938,7 +1944,11 @@ function showMenu(ev, items) {
   m.style.top = Math.min(ev.clientY, innerHeight - m.offsetHeight - 4) + 'px';
 }
 
-const hideMenu = () => $('menu').classList.add('hidden');
+function hideMenu() {
+  $('menu').classList.add('hidden');
+  if (menuFor) menuFor.classList.remove('menu-for');
+  menuFor = null;
+}
 
 function fileMenu(entry) {
   return [
@@ -2079,7 +2089,10 @@ function renderFinder() {
   if (!q) {
     const recent = [...S.mru.map((k) => S.tabs.find((t) => t.key === k)).filter(Boolean).map((t) => t.path),
       ...S.closed.filter((p) => !open.has(keyOf(p))).reverse().slice(0, 15)];  // then recently closed files, as PyCharm's Recent Files
-    items = recent.map((p) => ({path: p, name: basename(p), i: rootIndexOf(p), rel: relPath(p), namePos: [], relPos: []}));
+    items = recent.map((p) => {
+      const i = rootIndexOf(p);  // rel below the root, as finderCache has it: the row puts the root's name in front
+      return {path: p, name: basename(p), i, rel: i < 0 ? p : p.slice(S.roots[i].replace(/[\\/]+$/, '').length + 1), namePos: [], relPos: []};
+    });
   } else if (finderCache) {
     const nameQ = q.includes('\\') ? null : q;
     for (const f of finderCache.files) {
@@ -2909,8 +2922,17 @@ function updateStatus() {
   }
   $('st-eol').textContent = tab ? (tab.model.getEOL() === '\r\n' ? 'CRLF' : 'LF') : '';
   $('st-enc').textContent = tab ? (tab.encoding === 'utf-8' ? 'UTF-8' : tab.encoding.toUpperCase()) : '';
-  $('st-lang').textContent = tab ? (tab.model.getLanguageId() === 'py' ? `Python ${S.python}` : tab.model.getLanguageId()) : '';
+  $('st-lang').textContent = tab ? languageName(tab) : '';
   updateStatusPos();
+}
+
+// The status bar's name for a tab's language: Monaco's own name (JSON, Markdown), not its id ("plaintext" for a .csv).
+function languageName(tab) {
+  const id = tab.model.getLanguageId(), ext = (tab.path.match(/\.([^.\\/]+)$/) || [])[1];
+  if (id === 'py') return `Python ${S.python}`;
+  if (id === 'plaintext') return ext && /^(csv|tsv)$/i.test(ext) ? ext.toUpperCase() : 'Plain text';
+  const known = monaco.languages.getLanguages().find((l) => l.id === id);
+  return (known && known.aliases && known.aliases[0]) || id;
 }
 
 function updateStatusPos() {
@@ -3061,6 +3083,9 @@ function bindUi() {
   addEventListener('mouseup', (e) => { if (e.button === 3 || e.button === 4) { e.preventDefault(); goPlace(e.button === 3 ? -1 : 1); } });
   editor.onDidChangeCursorPosition(notePlace);
   addEventListener('mousedown', (e) => { if (!$('menu').contains(e.target)) hideMenu(); });
+  // Escape closes an open menu, ahead of whatever else Escape does (a menu used to stay until the next click), as does leaving the window
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('menu').classList.contains('hidden')) { e.preventDefault(); e.stopPropagation(); hideMenu(); } }, true);
+  addEventListener('blur', hideMenu);
   $('finder-input').addEventListener('input', renderFinder);
   $('finder').addEventListener('focusout', (e) => { if (!$('finder').contains(e.relatedTarget)) setTimeout(() => { if (!$('finder').contains(document.activeElement)) $('finder').classList.add('hidden'); }, 100); });
   $('tabs').addEventListener('wheel', (e) => {
@@ -3069,7 +3094,11 @@ function bindUi() {
     $('tabs').scrollLeft += e.deltaY;
   }, {passive: false});
   let tabsWidth = 0;
-  new ResizeObserver(() => { if ($('tabs').clientWidth !== tabsWidth) { tabsWidth = $('tabs').clientWidth; fitTabs(undefined, true); } }).observe($('tabs'));
+  // In the next frame: fitTabs changes the strip's rows, i.e. #tabs' height, and doing that inside the callback logged
+  // "ResizeObserver loop completed with undelivered notifications" (usage log, 2026-10-25 and 10-29)
+  new ResizeObserver(() => requestAnimationFrame(() => {
+    if ($('tabs').clientWidth !== tabsWidth) { tabsWidth = $('tabs').clientWidth; fitTabs(undefined, true); }
+  })).observe($('tabs'));
   $('add-root').onclick = addRoot;
   for (const b of document.querySelectorAll('#side-tabs button')) b.onclick = () => showView(b.dataset.view);
   const searchSoon = debounce(runSearch, 350);

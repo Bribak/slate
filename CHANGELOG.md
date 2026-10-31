@@ -6,8 +6,15 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+## 0.2.1 (2026-10-31)
+
 - Many open tabs no longer slow slate down: the tabs it restores are read the first time you look at them, so 29 tabs start as fast as one, with about 70 MB less memory and no 6 s of checking every file in the background.
 - Ctrl+S saves every changed tab, as in PyCharm, not only the one in front.
+- slate no longer opens to a blank window when it is reopened right after closing, while the old window is still shutting down (or anything else holds its port); and if the page ever fails to start, slate loads it again by itself.
+- The full glycan drawing with linkages, in the hover and in the table view's row panel, is a die-cut sticker like the small one, instead of sitting on a white box.
+- Ctrl+P's recent files no longer show their folder's name twice (glycowork\glycowork\glycowork\motif).
+- The status bar names a tab's language as CSV, TSV, JSON or Markdown, rather than "plaintext".
+- Escape closes a right-click menu, and the tab or file it belongs to is outlined while it is open.
 
 ## 0.2.0 (2026-10-27)
 
