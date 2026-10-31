@@ -1,17 +1,20 @@
 """The README's screenshots (docs/*.png): slate in a real window with a throwaway session, a short analysis script and
 glycowork's checkout among its folders, driven through the page and captured with PrintWindow.
 
-python tools/shots.py [--out docs]   Windows only; needs Pillow, and glycowork (1.11.1, for as_markdown) with matplotlib and
-                                     IPython for the console's Python
+python tools/shots.py [--out docs] [--behind]   Windows only; needs Pillow, and glycowork (1.11.1, for as_markdown) with
+                                                matplotlib and IPython for the console's Python
 
 Each scene is cropped to the part of the window it is about and saved at twice its CSS size (at most the screen's own
 scaling), so it stays sharp on high-resolution screens. The window stays on top while it runs, since Chromium draws no
-frames for a covered window. Prints the files written and exits 1 when a scene did not appear.
+frames for a covered window. --behind keeps it behind every other window instead, unfocused, with Chromium's occlusion
+detection off so it still draws (as tools/bench.py --behind), for running while someone works on the same screen.
+Prints the files written and exits 1 when a scene did not appear.
 """
 import argparse
 import ctypes
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -27,7 +30,12 @@ from slate import state
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--out', default = str(ROOT / 'docs'))
+ap.add_argument('--behind', action = 'store_true', help = 'keep the window behind all others, unfocused, still drawing')
 args = ap.parse_args()
+if args.behind:
+    from slate.app import LEAN
+    flags = LEAN.split()  # one --disable-features only: Chromium keeps the last of a repeated switch, and LEAN has none
+    os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = ' '.join(flags + ['--disable-backgrounding-occluded-windows', '--disable-features=CalculateNativeWinOcclusion'])
 OUT = Path(args.out)
 OUT.mkdir(exist_ok = True)
 GLYCOWORK = Path.home() / 'Documents' / 'glycowork'
@@ -163,6 +171,8 @@ def shoot(window, name, region):
 
 def on_top(window, value):
     """TopMost through Invoke, as in bench.py: set from this thread it can deadlock with the GUI thread over the GIL."""
+    if args.behind:
+        return
     from System import Func, Type  # pythonnet, loaded by pywebview by now
     form = window.native
     form.Invoke(Func[Type](lambda: setattr(form, 'TopMost', value)))
@@ -255,6 +265,7 @@ def run(window):
     if until(window, "document.querySelectorAll('#table-view .tv-cell .glycan').length >= 5 && 1", 'table drawings', wait = 30):
         js(window, "($('table-view').querySelectorAll('.tv-head .tv-cell')[5].click(), $('table-view').querySelectorAll('.tv-head .tv-cell')[5].click(), $('table-view').querySelector('.tv-row').click(), 1)")
         if until(window, "!!document.querySelector('#table-view .tv-drawing img') && !!document.querySelector('#table-view .tv-card p') && 1", 'table row panel', wait = 20):
+            js(window, "(document.activeElement.blur(), 1)")  # the filter box takes the focus, and drew its border and caret in the shot
             shoot(window, 'table', f"{REGION}(['#tabs', '#table-view .tv-bars'], 14, '#main')")  # down to the row's bars
     js(window, "(toggleTable(S.active, false), 1)")
     # the console, after running the script's cells
@@ -275,8 +286,23 @@ def start(*a, **kw):
     return original(*a, **kw)
 
 
+def to_back():
+    """With --behind: keep this process's window behind all others, without activating it, for as long as it is open."""
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    while True:
+        try:
+            user32.SetWindowPos(handle(), wintypes.HWND(1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # HWND_BOTTOM; no move, size or activation
+        except IndexError:
+            pass  # not shown yet, or closed
+        time.sleep(0.05)
+
+
 original = webview.start
 webview.start = start
+if args.behind:
+    create_window = webview.create_window
+    webview.create_window = lambda *a, **kw: create_window(*a, **{**kw, 'focus': False})
+    threading.Thread(target = to_back, daemon = True).start()
 sys.argv = sys.argv[:1]
 from slate.app import Api, main
 Api.set_background = lambda self, background: None  # this window never has keyboard focus, and its blur would lower WebView2's memory target
@@ -285,4 +311,11 @@ main()
 print('\n'.join(written), flush = True)
 if failed:
     print('failed:', '; '.join(failed), flush = True)
+for _ in range(20):  # as in smoke.py: WebView2's processes let go of the profile in HOME a moment after the window closes
+    shutil.rmtree(HOME, ignore_errors = True)
+    if not HOME.exists():
+        break
+    time.sleep(0.5)
+else:
+    print(f'shots: could not remove {HOME}', file = sys.stderr, flush = True)
 sys.exit(1 if failed else 0)
