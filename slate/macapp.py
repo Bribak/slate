@@ -23,15 +23,19 @@ APP = Path.home() / 'Applications' / 'slate.app'
 BUNDLE_ID = 'io.github.bribak.slate'
 LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 ICON_SIZES = (16, 32, 128, 256, 512)
+LOG = '$HOME/Library/Logs/slate.log'  # what slate prints when the app starts it (pywebview's errors, a traceback), appended per launch
 
 
 def applet(python):
-    """The AppleScript: the launch command runs in the background, so the applet quits at once and slate keeps no Terminal."""
+    """The AppleScript: the launch command runs in the background, so the applet quits at once and slate keeps no Terminal.
+    Its output goes to LOG; it went to /dev/null until the app failed to start slate on macOS 15 (CI, 2026-10-31) and
+    nothing said why."""
     launch = f'{shlex.quote(str(python))} -m slate'.replace('\\', '\\\\').replace('"', '\\"')
+    out = f' >> \\"{LOG}\\" 2>&1 &'  # in AppleScript's string, \" is a quote: the shell gets >> "$HOME/Library/Logs/slate.log"
     return f'''property launcher : "{launch}"
 
 on run
-\tdo shell script launcher & " > /dev/null 2>&1 &"
+\tdo shell script launcher & "{out}"
 end run
 
 on open theItems
@@ -39,7 +43,7 @@ on open theItems
 \trepeat with anItem in theItems
 \t\tset args to args & " " & quoted form of POSIX path of anItem
 \tend repeat
-\tdo shell script launcher & args & " > /dev/null 2>&1 &"
+\tdo shell script launcher & args & "{out}"
 end open
 '''
 

@@ -50,6 +50,13 @@ jobs:
           open -a "$app" "$RUNNER_TEMP/project/hello.py"
           state="$HOME/Library/Application Support/slate/state.json"
           for i in $(seq 1 90); do grep -q hello.py "$state" 2>/dev/null && break; sleep 1; done
+          if ! grep -q hello.py "$state" 2>/dev/null; then
+            # why the app did not open the file: slate's own output (the applet logs it), its processes, the system's log
+            echo '--- ~/Library/Logs/slate.log'; cat "$HOME/Library/Logs/slate.log" 2>/dev/null || echo '(none)'
+            echo '--- processes'; ps -axo pid,ppid,etime,command | grep -iE '[s]late|[a]pplet' || echo '(none)'
+            echo '--- system log'
+            log show --last 3m --style compact --predicate 'process == "applet" OR process CONTAINS[c] "python" OR eventMessage CONTAINS[c] "slate.app"' 2>/dev/null | tail -80
+          fi
           grep -o '"path": "[^"]*hello.py"' "$state"
           pkill -f 'slate' || true
           python -m slate --uninstall
