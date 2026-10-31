@@ -59,6 +59,7 @@ class Console:
         env = dict(os.environ, PYTHONIOENCODING = 'utf-8', PYTHONUNBUFFERED = '1')
         env.setdefault('MPLBACKEND', 'module://slate_inline')  # figures in the console (repl_child.py); a backend set by hand wins
         env.setdefault('GLYCOWORK_RICH_DISPLAY', '1')  # GlycoDraw then returns its drawing, which shows itself, rather than a matplotlib figure
+        env.setdefault('GLYCOWORK_DARK_DISPLAY', '1')  # and its drawings display, and inline with as_markdown(), as die-cut stickers (glycowork 1.11.1+)
         if python and not Path(python).is_file():
             self._push('e', f'{python} not found; using the Python slate runs on\n')
         python = self.executable(python)

@@ -125,12 +125,13 @@ def glycan_sticker(value):
     page are stickers in slate. A plain drawing's canvas is widened by the difference between GlycoDraw's margins for a
     sticker and for a plain or shadowed drawing (0.45, 0.2 and 0.35 of dim), since the cut and its shadow need that room:
     switched to sticker without it, they were clipped flat at the edges. The result equals GlycoDraw(..., sticker = True)
-    but for a filter's id, which differs between two such calls too. The user's own drawing is left as it was."""
+    but for a filter's id, which differs between two such calls too. The user's own drawing is left as it was. glycowork's
+    own as_sticker() does this where it exists (proposed for 1.11.1: glycowork/.claude/changes/2026-10-31-stickers-on-dark.md)."""
     kind = type(value)
     if kind.__name__ != 'GlycanDrawing' or not kind.__module__.startswith('glycowork.') or not hasattr(value, 'sticker'):
         return None
     try:
-        drawing = value
+        drawing = value.as_sticker() if hasattr(value, 'as_sticker') else value
         if not drawing.sticker:
             canvas = copy.copy(drawing.drawing_obj)  # a drawsvg Drawing; its elements are shared, not changed
             extra = drawing.dim * (0.45 - (0.35 if drawing.shadow else 0.2))
@@ -170,7 +171,8 @@ def markdown_stickers(md):
     as text (the editor's rule: at least one linkage, no spaces, not in code) becomes its sticker, as with as_markdown(),
     which keeps the string as the drawing's alt text, and a plain
     as_markdown() drawing is redrawn as one from its alt text, which names the glycan and how it was drawn, at the same
-    symbol size (its height over the plain SVG's, times GlycoDraw's dim of 50). Text without a linkage, a Python without
+    symbol size (its height over the plain SVG's, times GlycoDraw's dim of 50); with the GLYCOWORK_DARK_DISPLAY that repl.py
+    sets, a glycowork with as_sticker() makes as_markdown() stickers itself. Text without a linkage, a Python without
     glycowork (1.11.1+, for as_markdown) or anything that fails leaves the Markdown as it is."""
     if not LINKAGE.search(md):
         return md
@@ -218,6 +220,34 @@ def markdown_stickers(md):
         return md
 
 
+MAX_ROWS, MAX_COLUMNS = 20, 12  # of a DataFrame shown as a table
+
+
+def dataframe_markdown(value):
+    """A pandas DataFrame (glycowork's results among them) as a Markdown table, which the console shows with the glycans in
+    its cells drawn (markdown_stickers), rather than pandas' 80-column text, which hid all but the first and last column of
+    a get_differential_expression result behind '...'. The first MAX_ROWS rows and MAX_COLUMNS columns, floats to 4
+    significant digits; the index only when it holds labels (strings). None for anything else, or if anything fails."""
+    pd = sys.modules.get('pandas')
+    if pd is None or not isinstance(value, pd.DataFrame):
+        return None
+    try:
+        frame = value.iloc[:MAX_ROWS, :MAX_COLUMNS]
+        labels = frame.index.dtype == object
+
+        def cell(v):
+            if v is None or (isinstance(v, float) and v != v):
+                return ''
+            return (f'{v:.4g}' if isinstance(v, float) else str(v)).replace('|', '\\|').replace('\n', ' ')
+        head = ([cell(value.index.name or '')] if labels else []) + [cell(c) for c in frame.columns]
+        rows = [([cell(i)] if labels else []) + [cell(v) for v in row] for i, row in zip(frame.index, frame.itertuples(index = False))]
+        lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)] + ['| ' + ' | '.join(r) + ' |' for r in rows]
+        hidden = [f'{n} more {what}' for n, what in ((len(value) - len(frame), 'rows'), (value.shape[1] - frame.shape[1], 'columns')) if n]
+        return '\n'.join(lines) + (f'\n\n*{value.shape[0]} rows × {value.shape[1]} columns; {" and ".join(hidden)} not shown*' if hidden else '')
+    except Exception:
+        return None
+
+
 def show_rich(value):
     """Show the value if it can show itself (Jupyter's _repr_*_ methods, in JupyterLab's order of preference, or a matplotlib
     figure); False otherwise. A GlycoDraw drawing shows as a die-cut sticker (glycan_sticker)."""
@@ -230,6 +260,10 @@ def show_rich(value):
         return True  # a pyplot figure: shown at the end of the run with the others
     if hasattr(value, 'savefig') and hasattr(value, 'dpi'):
         send_figure(value)
+        return True
+    table = dataframe_markdown(value)
+    if table is not None:
+        send({'md': markdown_stickers(table)})
         return True
     for method, mime in (('_repr_markdown_', 'text/markdown'), ('_repr_svg_', 'image/svg+xml'), ('_repr_png_', 'image/png'), ('_repr_jpeg_', 'image/jpeg')):
         fn = getattr(type(value), method, None)  # looked up on the type, as IPython does, so objects answering any attribute (mocks, some proxies) are not taken for images
@@ -263,22 +297,34 @@ def display(*objs, **options):
             print(repr(obj))
 
 
-class IPythonDisplay:
-    """Swaps display() above in for IPython's when IPython imports the module that defines it, since outside a kernel
-    IPython's only prints each repr. A finder on sys.meta_path, so `from IPython.display import display` already gets it."""
-    NAMES = ('IPython.core.display_functions', 'IPython.core.display')  # IPython 8 and later; before 8
+def svg_figure(svg_data, chem = False, shadow = False, sticker = False):
+    """glycowork's display_svg_with_matplotlib in the console (DisplaySwaps): the SVG as it is, which the page shows crisp,
+    rather than rendered through glycorender into a matplotlib figure. That drew neither matplotlib's text nor the glycans
+    annotate_figure puts on the dots of get_volcano and plot_network, so the volcano came out blank (glycowork 1.11.0 and
+    1.11.1). A matplotlib figure gets the figure sticker."""
+    svg = svg_data if isinstance(svg_data, str) else svg_data.as_svg()
+    send_image('image/svg+xml', svg, figure = 'matplotlib' in svg[:3000])
+
+
+class DisplaySwaps:
+    """Swaps the console's display in for a module's own when it is imported: display() above for IPython's, since outside
+    a kernel IPython's only prints each repr, and svg_figure for glycowork's display_svg_with_matplotlib. A finder on
+    sys.meta_path, so `from IPython.display import display` already gets it, and glycowork's own calls (it imports the
+    function where it calls it, or calls it as a global of draw.py) find the swapped one."""
+    SWAPS = {'IPython.core.display_functions': ('display', display), 'IPython.core.display': ('display', display),  # IPython 8 and later; before 8
+             'glycowork.motif.draw': ('display_svg_with_matplotlib', svg_figure)}
 
     def find_spec(self, name, path, target = None):
-        if name not in self.NAMES:
+        if name not in self.SWAPS:
             return None
         spec = importlib.machinery.PathFinder.find_spec(name, path)
         if spec is not None and spec.loader is not None and hasattr(spec.loader, 'exec_module'):
-            run_module = spec.loader.exec_module
+            run_module, (attr, ours) = spec.loader.exec_module, self.SWAPS[name]
 
             def exec_module(module):
                 run_module(module)
-                if callable(vars(module).get('display')):  # not getattr: IPython 8's IPython.core.display warns that its display is deprecated
-                    module.display = display
+                if callable(vars(module).get(attr)):  # not getattr: IPython 8's IPython.core.display warns that its display is deprecated
+                    setattr(module, attr, ours)
             spec.loader.exec_module = exec_module
         return spec
 
@@ -344,7 +390,7 @@ def main():
     sys.stdout, sys.stderr = Framed('o'), Framed('e')
     builtins.input = no_input
     builtins.display = display  # as in Jupyter, without an import
-    sys.meta_path.insert(0, IPythonDisplay())
+    sys.meta_path.insert(0, DisplaySwaps())
     inline_backend()
     ns = {'__name__': '__main__', '__builtins__': builtins}
     busy = threading.Event()

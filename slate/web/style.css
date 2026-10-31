@@ -131,6 +131,12 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #console-out .md code { font: 12.5px var(--mono); background: var(--panel); padding: 0 3px; border-radius: 3px; }
 #console-out .md img { vertical-align: middle; max-width: 100%; }
 #console-out .md img.chip { background: #FFF; border-radius: 3px; padding: 1px 3px; }
+#console-out .md .md-table { overflow-x: auto; margin: 4px 0; }  /* a DataFrame (repl_child.dataframe_markdown), glycans drawn in its cells */
+#console-out .md table { border-collapse: collapse; font-size: 12.5px; }
+#console-out .md th, #console-out .md td { padding: 3px 12px 3px 0; border-bottom: 1px solid #383838; text-align: left; white-space: nowrap; vertical-align: middle; }
+#console-out .md th { color: var(--fg-dim); font-weight: 600; }
+#console-out .md td.num, #console-out .md th.num { text-align: right; font: 12px var(--mono); }
+#console-out .md td img { max-width: none; }  /* a glycan keeps its size; the table scrolls sideways instead */
 #console-input-row { display: flex; align-items: flex-start; border-top: 1px solid #353535; padding: 3px 0 3px 10px; }
 #console-input-row .prompt { font: 13px/19px var(--mono); color: #606366; margin-right: 6px; }
 #console-in { flex: 1; height: 19px; }
@@ -236,6 +242,8 @@ select:focus { border-color: var(--accent); }
 .tv-card { font-size: 12px; line-height: 1.5; }
 .tv-card p { margin: 4px 0; }
 .tv-card code { font: 11.5px var(--mono); }
+.tv-card .motif { cursor: pointer; color: var(--accent); text-decoration: underline dotted; text-underline-offset: 3px; }  /* pointing at one lights it up in the drawing; a click searches */
+.tv-card .motif:hover { text-decoration-style: solid; }
 .tv-label { margin: 12px 0 4px; font-size: 11px; color: var(--fg-dim); letter-spacing: .04em; text-transform: uppercase; }
 .tv-means { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
 .tv-bars { display: grid; grid-template-columns: minmax(40px, 90px) 1fr auto; gap: 2px 8px; align-items: center; font-size: 11.5px; }

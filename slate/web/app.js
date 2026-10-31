@@ -1037,7 +1037,7 @@ const GLYCANS_KEPT = 300;  // drawings, most recently shown first; each is about
 const GLYTOUCAN = /(^|[^A-Za-z0-9])(G\d{5}[A-Z]{2})(?![A-Za-z0-9])/g;
 const IDS_KEPT = 5000;
 const glycans = {drawn: new Map(), waiting: new Set(), decorations: null, colors: null, off: false, noProcess: false, count: 0, cards: new Map(), full: new Map(),
-  ids: new Map(), idsWaiting: new Set()};
+  ids: new Map(), idsWaiting: new Set(), lit: new Map(), motifs: new Map()};
 
 // SNFG colours by monosaccharide, as glycowork's GlycoDraw colours them (motif/draw.py sugar_dict), lightened for Darcula's
 // dark background. A residue takes the colour of the longest name it starts with: GlcNAc6S is a GlcNAc, Neu5Ac9Ac a Neu5Ac.
@@ -1149,15 +1149,36 @@ function glycanDrawing([svg, sticker]) {
 // Cached per glycan, the newest GLYCANS_KEPT.
 function glycanFull(glycan) {
   if (!glycans.full.has(glycan)) {
-    glycans.full.set(glycan, api.glycan_full(glycan, S.roots).then((r) => {
-      if (!r || !r.svg) return null;
-      const [x, y, w, h] = viewBox(r.svg);
-      const svg = r.sticker ? r.svg : r.svg.replace(/<svg[^>]*>/, (open) => `${open}<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#FFFFFF"/>`);
-      return {url: svgUrl(svg), size: [w, h]};
-    }, () => null));
+    glycans.full.set(glycan, api.glycan_full(glycan, S.roots).then(fullDrawing, () => null));
     for (const g of glycans.full.keys()) { if (glycans.full.size <= GLYCANS_KEPT) break; glycans.full.delete(g); }
   }
   return glycans.full.get(glycan);
+}
+
+function fullDrawing(r) {
+  if (!r || !r.svg) return null;
+  const [x, y, w, h] = viewBox(r.svg);
+  const svg = r.sticker ? r.svg : r.svg.replace(/<svg[^>]*>/, (open) => `${open}<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#FFFFFF"/>`);
+  return {url: svgUrl(svg), size: [w, h]};
+}
+
+// The full drawing with one of its motifs highlighted (GlycoDraw's highlight_motif), shown while the mouse is on that motif's
+// name in the hover card or the table panel. The same size as the plain one, so the two swap in place. Cached like the cards.
+function glycanLit(glycan, motif) {
+  const key = glycan + '\n' + motif;
+  if (!glycans.lit.has(key)) {
+    glycans.lit.set(key, api.glycan_highlight(glycan, motif, S.roots).then(fullDrawing, () => null));
+    for (const k of glycans.lit.keys()) { if (glycans.lit.size <= GLYCANS_KEPT) break; glycans.lit.delete(k); }
+  }
+  return glycans.lit.get(key);
+}
+
+// img lit up with motif while the mouse stays on its name (from), and back as it was once the mouse leaves.
+function lightUp(img, glycan, motif, from) {
+  if (!img) return;
+  img.dataset.plain = img.dataset.plain || img.src;
+  glycanLit(glycan, motif).then((lit) => { if (lit && from.matches(':hover')) img.src = lit.url; });
+  from.addEventListener('mouseleave', () => { img.src = img.dataset.plain; }, {once: true});
 }
 
 function drawnGlycan(glycan) {
@@ -1244,6 +1265,7 @@ function setupGlycans(saved) {
       const within = (promise, ms, otherwise) => Promise.race([promise, new Promise((r) => setTimeout(() => r(otherwise), ms))]);
       const [full, card] = await Promise.all([within(glycanFull(f.glycan), 1000, null), within(glycanCard(f.glycan), 400, '')]);
       const {url, size} = full || {url: d.style.textContent.match(/url\("([^"]+)"\)/)[1], size: d.size};
+      glycans.hovered = f.glycan;  // whose motifs the card's links light up (pointAtMotif)
       // Monaco caps a hover at a quarter of the editor's height, at least 250 px: a taller drawing pushed the card out of sight
       const bars = TABLE_TAB.test(model.uri.path) ? rowBars(model, f.line) : '';  // a glycomics row's abundances
       const room = Math.max(250, editor.getLayoutInfo().height / 4) - (card ? 110 : 16) - (bars ? 64 : 0) - (f.id ? 24 : 0);
@@ -1257,6 +1279,34 @@ function setupGlycans(saved) {
   monaco.languages.registerHoverProvider('py', hover);
   monaco.languages.registerHoverProvider('plaintext', hover);  // .csv, .tsv and .txt tabs (glycansOn)
   monaco.editor.registerCommand('slate.motifSearch', (accessor, motif) => searchMotif(motif));
+  // Monaco renders the card's links as <a data-href="command:...">, so pointing at a motif's name is caught page-wide: it
+  // lights that motif up in the drawing above (lightUp). Entering the link only, not each of its children.
+  document.addEventListener('mouseover', (e) => {
+    const a = e.target.closest && e.target.closest('.monaco-hover a[data-href^="command:slate.motifSearch"]');
+    if (!a || a.contains(e.relatedTarget) || !glycans.hovered) return;
+    let motif;
+    try { motif = JSON.parse(decodeURIComponent(a.dataset.href.split('?')[1]))[0]; } catch (err) { return; }
+    lightUp(a.closest('.monaco-hover').querySelector('img'), glycans.hovered, motif, a);
+  });
+  // Right-click a drawing to copy it for a slide: the hover's and the table panel's as shown, an inline sticker (editor,
+  // table view) as its full drawing with linkages. In the capture phase: Monaco's hover stops the event from bubbling. By
+  // what is under the pointer: in the editor the event's target is Monaco's textarea, which it moves under the mouse.
+  document.addEventListener('contextmenu', (e) => {
+    const under = document.elementsFromPoint(e.clientX, e.clientY);
+    const img = under.find((n) => n.matches('.monaco-hover img, #table-view .tv-drawing img'));
+    if (img) { showMenu(e, [['Copy image', () => copyImage(img)]]); return; }
+    const sticker = under.find((n) => n.classList.contains('glycan'));
+    const drawn = sticker && [...glycans.drawn].find(([, d]) => sticker.classList.contains(d.cls.split(' ').pop()));
+    if (drawn) showMenu(e, [['Copy drawing', () => copyGlycan(drawn[0])]]);
+  }, true);
+}
+
+async function copyGlycan(glycan) {
+  const full = await glycanFull(glycan);
+  if (!full) { toast('Could not draw this glycan'); return; }
+  const img = new Image();
+  img.onload = () => copyImage(img);
+  img.src = full.url;
 }
 
 // The hover card under a glycan's drawing (Api.glycan_info): class, mass, composition, glycowork's motifs (each a link
@@ -1269,7 +1319,8 @@ function glycanCard(glycan) {
       const lines = [[GLYCAN_CLASS[info.class] && `**${GLYCAN_CLASS[info.class]}**`, info.mass && `${info.mass.toFixed(4)} Da monoisotopic`].filter(Boolean).join(' · ')];
       if (info.composition) lines.push(Object.entries(info.composition).map(([k, v]) => `${k} ${v}`).join(' · '));
       if (info.motifs && info.motifs.length) {
-        const link = (m) => `[${escapeMd(m)}](command:slate.motifSearch?${encodeURIComponent(JSON.stringify([m]))} "Find the glycans holding ${m}")`;
+        glycans.motifs.set(glycan, info.motifs);
+        const link = (m) => `[${escapeMd(m)}](command:slate.motifSearch?${encodeURIComponent(JSON.stringify([m]))} "Click to find the glycans holding ${m}")`;
         lines.push('Motifs: ' + info.motifs.map(link).join(', '));
       }
       if (info.canonical && info.canonical !== glycan) lines.push(`glycowork writes it \`${info.canonical}\``);
@@ -1566,7 +1617,15 @@ function showTable(tab) {
   const back = el('button', null, '≡ Text');
   back.title = 'Back to the text (Escape)';
   back.onclick = () => toggleTable(tab, false);
-  head.append(filter, count, el('span', 'spacer'), back);
+  head.append(filter, count, el('span', 'spacer'));
+  const samples = header.slice(0, ncol).filter((h, c) => numeric[c] && h);
+  if (glycanCol !== undefined && samples.length > 1) {
+    const analyze = el('button', null, '▶ Analyze');
+    analyze.title = 'glycowork in the console: differential expression and a volcano plot for two sample groups, else a heatmap';
+    analyze.onclick = () => analyzeTable(tab, samples);
+    head.append(analyze);
+  }
+  head.append(back);
   cols.style.width = rows.style.width = total + 'px';
   scroll.append(cols, rows);
   const main = el('div', 'tv-main');
@@ -1687,6 +1746,17 @@ function showTable(tab) {
     if (selected !== r) return;
     if (full) { const img = el('img'); img.src = full.url; img.style.width = Math.min(full.size[0], 320) + 'px'; picture.append(img); }
     if (info) card.innerHTML = info.split('  \n').map((line) => markdownHtml(line.replace(/\\(.)/g, '$1'))).join('');  // the hover card's lines; links stay text
+    const motifs = glycans.motifs.get(g), line = [...card.children].find((p) => p.textContent.startsWith('Motifs: '));
+    if (motifs && line) {  // each name lights its motif up in the drawing, and a click finds the glycans holding it, as in the hover
+      line.textContent = 'Motifs: ';
+      motifs.forEach((m, i) => {
+        const name = el('span', 'motif', m);
+        name.title = `Click to find the glycans holding ${m}`;
+        name.addEventListener('mouseenter', () => lightUp(picture.querySelector('img'), g, m, name));
+        name.onclick = () => searchMotif(m);
+        line.append(...(i ? [', ', name] : [name]));
+      });
+    }
   };
   rows.addEventListener('click', (e) => { const row = e.target.closest('.tv-row'); if (row) showRow(+row.dataset.r); });
   rows.addEventListener('dblclick', (e) => {
@@ -2328,16 +2398,42 @@ function consoleEnter() {
 function submitConsole() {
   const code = consoleInput.getValue().replace(/\s+$/, '');
   if (!code) return;
+  consoleInput.setValue('');
+  runTyped(code, consoleCwd());
+}
+
+// Code run as if typed into the console: shown, kept in its history (Up brings it back to edit), run with cwd's Python.
+function runTyped(code, cwd) {
   if (S.history[S.history.length - 1] !== code) S.history.push(code);
   S.history = S.history.slice(-300);
   histIdx = null;
-  consoleInput.setValue('');
+  consoleStarted = true;  // before toggleConsole, which would otherwise start a console of its own alongside this run's
+  if (!S.consoleOpen) toggleConsole(true, false);
   echo(code);
   consoleBusy++;
   $('console-busy').classList.remove('hidden');
-  consoleStarted = true;
-  api.console_run(code, consoleCwd(), S.roots);
+  api.console_run(code, cwd, S.roots);
   persist();
+}
+
+// One click from an abundance table to glycowork's statistics, as code in the console, where it can be edited and run
+// again: two sample groups (groupOf: H1..H4 and P1..P4, as the table panel groups them) get get_differential_expression
+// and its volcano plot, in column order (Log2FC is the second group over the first); any other grouping a heatmap.
+function analyzeTable(tab, samples) {
+  if (isDirty(tab)) { toast('Save the table first: glycowork reads it from the file'); return; }
+  const groups = new Map();
+  for (const s of samples) groups.set(groupOf(s), [...(groups.get(groupOf(s)) || []), s]);
+  // Python literals as Daniel writes them: r'C:\...' and 'H1'; JSON's (also valid Python) where a quote or backslash needs escaping
+  const str = (s) => (/['\\\n]/.test(s) ? JSON.stringify(s) : `'${s}'`);
+  const [one, two] = [...groups.values()], path = /['\n]/.test(tab.path) || tab.path.endsWith('\\') ? JSON.stringify(tab.path) : `r'${tab.path}'`;
+  const list = (names) => '[' + names.map(str).join(', ') + ']';
+  const code = groups.size === 2 && one.length > 1 && two.length > 1
+    ? ['from glycowork.motif.analysis import get_differential_expression, get_volcano',
+      `de = get_differential_expression(${path}, group1 = ${list(one)}, group2 = ${list(two)})`,
+      'get_volcano(de)', "de[['Glycan', 'Log2FC', 'corr p-val', 'significant', 'Effect size']].head(10)"].join('\n')
+    : `from glycowork.motif.analysis import get_heatmap\nget_heatmap(${path})`;
+  const root = rootIndexOf(tab.path);
+  runTyped(code, root >= 0 ? S.roots[root] : dirname(tab.path));
 }
 
 function historyStep(step) {
@@ -2423,10 +2519,13 @@ function keepNewest(out) {
 }
 
 async function copyImage(img) {
-  const canvas = document.createElement('canvas');  // the clipboard takes PNG only, so an SVG is drawn first
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  canvas.getContext('2d').drawImage(img, 0, 0);
+  // The clipboard takes PNG only, so the image is drawn first; an SVG (glycan drawings) at 4x its size, at most 4096 px, so
+  // it stays sharp on a slide. A transparent sticker stays transparent.
+  const scale = /^data:image\/svg/.test(img.src) ? Math.min(4, 4096 / Math.max(img.naturalWidth, img.naturalHeight)) : 1;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
   try {
     await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
@@ -2715,7 +2814,7 @@ async function openSettings() {
   addEventListener('mousedown', outside, true);
 }
 
-// Markdown's common lines (headings, bullets, numbered lists, paragraphs, `code`, **bold**, *italics*) as HTML: CHANGELOG.md, and
+// Markdown's common lines (headings, bullets, numbered lists, paragraphs, pipe tables, `code`, **bold**, *italics*) as HTML: CHANGELOG.md, and
 // with `images` the console's Markdown, where an <img> with an image data URL (GlycoDraw's as_markdown) is kept. Everything else
 // is escaped, and links stay text: following one would take the window away from slate.
 function markdownHtml(md, images = false) {
@@ -2733,6 +2832,14 @@ function markdownHtml(md, images = false) {
   const inline = (s) => escapeHtml(s.replace(/`([^`]+)`/g, (m, code) => keep(`<code>${escapeHtml(code)}</code>`)))
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\*([^*\s][^*]*)\*/g, '<i>$1</i>').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
   const block = (b) => {
+    const rows = b.split('\n');
+    if (rows.length > 1 && rows.every((r) => r.trim().startsWith('|')) && /^\|(\s*:?-+:?\s*\|)+$/.test(rows[1].trim())) {
+      // A pipe table, as the console sends a pandas DataFrame (repl_child.dataframe_markdown); \| is a | inside a cell
+      const cells = (r) => r.trim().replace(/\\\|/g, '\u0001').replace(/^\||\|$/g, '').split('|').map((c) => c.trim().replace(/\u0001/g, '|'));
+      const td = (c, tag) => `<${tag}${/^-?(\d[\d,]*\.?\d*|\.\d+)(e[-+]?\d+)?%?$/i.test(c) ? ' class="num"' : ''}>${inline(c)}</${tag}>`;
+      return `<div class="md-table"><table><thead><tr>${cells(rows[0]).map((c) => td(c, 'th')).join('')}</tr></thead><tbody>`
+        + rows.slice(2).map((r) => `<tr>${cells(r).map((c) => td(c, 'td')).join('')}</tr>`).join('') + '</tbody></table></div>';
+    }
     const heading = b.match(/^(#{1,4}) (.*)(?:\n([\s\S]*))?/);
     if (heading) return `<h${heading[1].length + 2}>${inline(heading[2])}</h${heading[1].length + 2}>${heading[3] ? block(heading[3]) : ''}`;
     if (/^[-*] /.test(b)) return `<ul>${b.split(/\n(?=[-*] )/).map((item) => `<li>${inline(item.slice(2))}</li>`).join('')}</ul>`;

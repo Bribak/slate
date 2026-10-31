@@ -234,6 +234,10 @@ def run(window):
     js(window, f"glycanCard({json.dumps(SLEX)}).then(() => (editor.setPosition({{lineNumber: {SLEX_LINE}, column: 12}}), editor.focus(), editor.trigger('shots', 'editor.action.showHover', {{}}), 1))")
     if until(window, f"!!document.querySelector('{HOVER} img') && document.querySelector('{HOVER}').innerText.includes('Motifs') && 1", 'glycan hover card', wait = 20):
         shoot(window, 'glycans', f"{REGION}(['#tabs', '{HOVER}'], 16, '#main')")
+        # the same hover with SialylLewisX lit up in its drawing, as while the mouse points at that motif's name
+        js(window, f"glycanLit({json.dumps(SLEX)}, 'SialylLewisX').then((lit) => (document.querySelector('{HOVER} img').src = lit.url, 1))")
+        time.sleep(0.5)
+        shoot(window, 'motif', f"{REGION}(['#tabs', '{HOVER}'], 16, '#main')")
     # the hint for a glycan in another notation, with its quick fix
     js(window, NO_HOVER)
     js(window, f"(editor.setPosition({{lineNumber: {REFERENCE_LINE}, column: 16}}), editor.trigger('shots', 'editor.action.showHover', {{}}), 1)")
@@ -280,6 +284,17 @@ def run(window):
         shoot(window, 'console', f"{REGION}(['#main'], 0, null)")
     else:
         print('console:', js(window, "$('console-out').innerText.slice(-800)"))
+    # one click from the table to glycowork's differential expression, its volcano plot and the results, in the console; after
+    # the console scene, whose shot would otherwise start with this run's output and markers
+    js(window, f"openFile({json.dumps(str(TABLE))}).then(() => (editor.setPosition({{lineNumber: 1, column: 1}}), toggleTable(S.active, true), $('console-clear').click(), 1))")  # no selection in the status bar
+    if until(window, "document.querySelectorAll('#table-view .tv-cell .glycan').length >= 5 && 1", 'table drawings again', wait = 30):
+        js(window, "($('table-view').querySelector('.tv-row').click(), [...$('table-view').querySelectorAll('.tv-bar button')].find((b) => b.textContent.includes('Analyze')).click(), 1)")
+        if until(window, "document.querySelector('#console-out img.plot.figure') && document.querySelector('#console-out .md table img') && !document.querySelector('#console-busy:not(.hidden)') && 1",
+                 'analysis', wait = 120):
+            js(window, "(() => { const out = $('console-out'), fig = out.querySelector('img.plot.figure'); document.activeElement.blur();"
+                       " out.scrollTop += fig.getBoundingClientRect().top - out.getBoundingClientRect().top - 8; return 1; })()")
+            time.sleep(1)
+            shoot(window, 'analyze', f"{REGION}(['#main'], 0, null)")
 
 
 def start(*a, **kw):

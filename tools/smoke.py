@@ -142,6 +142,15 @@ def run(window):
     check('table view sorts a column', js(window, sort), expect = 'Fuc(a1-2)Gal')  # abundance, descending
     js(window, "$('table-view').dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})) || 1")
     check('table view closes', js(window, "!$('table-view') && $('st-table').textContent"), expect = '⊞ Table')
+    groups = PROJECT / 'groups.csv'  # two sample groups: the table view offers glycowork's differential expression
+    groups.write_text('glycan,H1,H2,P1,P2\nNeu5Ac(a2-3)Gal(b1-4)GlcNAc,1,2,3,4\nFuc(a1-2)Gal,2,3,4,5\n', encoding = 'utf-8')
+    js(window, f"openFile({json.dumps(str(groups))}).then(() => (toggleTable(S.active, true), 1))")
+    check('table view offers Analyze', until(window, "$('table-view') && [...$('table-view').querySelectorAll('.tv-bar button')].map((b) => b.textContent).join(' ')", wait = 10),
+          expect = '▶ Analyze ≡ Text')
+    js(window, "(toggleTable(S.active, false), 1)")
+    check('Markdown tables', js(window, "markdownHtml('| Glycan | Log2FC |\\n|---|---|\\n| Gal(b1-3)GalNAc | 0.87 |\\n| a\\\\|b | -1e-07 |', true)"),
+          expect = '<div class="md-table"><table><thead><tr><th>Glycan</th><th>Log2FC</th></tr></thead><tbody><tr><td>Gal(b1-3)GalNAc</td>'
+                   '<td class="num">0.87</td></tr><tr><td>a|b</td><td class="num">-1e-07</td></tr></tbody></table></div>')
     contexts = "['Neu5Ac(a2-3)Gal(b1-', 'Gal(b1-3)[Fuc(a1-4)]Gl', 'Gal(b1-3)[', 'self.f('].map((p) => { const c = glycanContext(p); return c && [c.kind, c.child || '', c.typed].join(' '); })"
     check('glycan typing contexts', js(window, contexts), expect = ['link Gal b1-', 'parent Fuc Gl', 'leaf  ', None])
     refs = "referencesIn('PMID: 37608048, doi:10.1016/S0092-8674(00)81683-9. G00031MO').map((r) => r.kind + ':' + r.id).join(' ')"

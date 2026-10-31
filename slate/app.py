@@ -48,7 +48,9 @@ class Api:
 
     # session
     def get_state(self):
-        self._asked.set()  # the page's first call
+        if not self._asked.is_set():  # the page's first call: logged at once, since the page's own events wait for a blur or a minute
+            usage.record('page', seconds = round(time.time() - self._started, 2))
+        self._asked.set()
         return {'state': self._state, 'python': sys.version.split()[0], 'version': __version__, 'home': str(Path.home()), 'sep': os.sep, 'mac': MAC, 'linux': LINUX}
 
     def save_state(self, new_state):
@@ -265,6 +267,10 @@ class Api:
     def glycan_full(self, glycan, roots = ()):
         """{'svg', 'sticker'}: GlycoDraw's full drawing, with linkages, for the hover, or {'error': message}."""
         return self._drawer.request({'op': 'full', 'glycan': glycan}, self._state.get('console_python'), list(roots))
+
+    def glycan_highlight(self, glycan, motif, roots = ()):
+        """glycan_full's drawing with a motif of glycowork's list highlighted, as the hover card's and table panel's motif names show it."""
+        return self._drawer.request({'op': 'highlight', 'glycan': glycan, 'motif': motif}, self._state.get('console_python'), list(roots))
 
     def glycan_info(self, glycan, roots = ()):
         """The hover card: canonical form, mass, composition, class and glycowork's motifs (slate/glycan_child.py)."""

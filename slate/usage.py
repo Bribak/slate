@@ -70,6 +70,12 @@ def summary(events):
         opened = [e['file_ms'] for e in by_kind['ready'] if e.get('file_ms')]
         if opened:
             out.append(f"startup to double-clicked file: median {median(opened):.0f} ms, max {max(opened):.0f} ms ({len(opened)} starts)")
+    if by_kind['page']:
+        started = [e['seconds'] for e in by_kind['page']]
+        out.append(f"page asked for its state: median {median(started):.2f} s after launch, max {max(started):.2f} s"
+                   f" ({len(started)} of {len(by_kind['shown'])} windows)")
+    if by_kind['page_stalled']:
+        out.append(f"page stalled {len(by_kind['page_stalled'])} times and was loaded again: {by_kind['page_stalled'][-1]}")
     calls, keys, long_tasks = defaultdict(lambda: [0, 0.0, 0.0, 0]), Counter(), [0, 0, 0.0]
     for e in by_kind['activity']:
         for name, (n, total, worst, errors) in e.get('calls', {}).items():

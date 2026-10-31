@@ -28,10 +28,10 @@ XF = 0.4  # crossfade between scenes, through the background
 PANELS = [
     (3.0, 'motif-search', (500, 40, 2140, 823), (1060, 250, 2140, 766), 'Your glycans, drawn right in the code'),
     (3.0, 'typing', (0, 0, 1156, 552), (124, 0, 1280, 552), 'The next linkage suggested as you type'),
-    (3.0, 'glycans', (100, 359, 1400, 978), (160, 400, 1360, 971), 'Hover for class, mass, composition and motifs'),
+    (3.0, 'motif', (100, 359, 1400, 978), (160, 400, 1360, 971), 'Point at a motif and it lights up'),
     (3.4, 'table', (0, 0, 1959, 935), (0, 70, 1700, 881), 'Your abundance tables, every glycan drawn'),
     (3.0, 'motif-search', (0, 0, 2140, 1019), (0, 0, 1500, 714), 'Search all your folders by motif'),
-    (3.4, 'console', (0, 560, 1959, 1493), (0, 806, 1500, 1522), 'GlycoDraw, plots and Markdown in the console'),
+    (3.4, 'analyze', (0, 0, 1959, 935), (10, 548, 1770, 1388), 'One click from table to volcano plot'),
 ]
 NUMBERS = [('430 MB', 'of RAM with eight files open', 'PyCharm: 4.5 GB'), ('22 ms', 'from keystroke to screen', "the display's own frame time"),
            ('1.8 s', 'to open a double-clicked file', '0.25 s when slate is already open')]

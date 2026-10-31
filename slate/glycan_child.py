@@ -4,6 +4,8 @@ per request on stdin with one JSON line on stdout:
   die-cut sticker where glycowork has them (sticker true), for next to the string.
 * {"op": "full", "glycan": ...}: {"svg": ..., "sticker": ...}, the usual GlycoDraw with linkages, as a sticker where
   glycowork has them, for the hover. Only hovered glycans need it, so it is drawn then rather than with every glycan on screen.
+* {"op": "highlight", "glycan": ..., "motif": ...}: the same, with a motif from glycowork's list (by name) highlighted, for
+  the hover card's and the table panel's motif names.
 * {"op": "check", "glycans": [...]}: {glycan: {"canonical": ...} or {"error": ...}}, through canonicalize_iupac.
 * {"op": "info", "glycan": ...}: the hover card: mass, composition, class, motifs, canonical form.
 * {"op": "match", "query": ..., "glycans": [...]}: {"matches": [...]} for a motif name from glycowork's motif list, a
@@ -46,13 +48,13 @@ def small(glycan, GlycoDraw):
         return [GlycoDraw(glycan, compact = True, show_linkage = False, suppress = True).as_svg(), False]
 
 
-def full(glycan, GlycoDraw):
+def full(glycan, GlycoDraw, **style):
     """{svg, sticker}: the hover's drawing with linkages, a die-cut sticker like the small one (glycowork 1.10.1+), else
-    the plain drawing, which the page puts on white."""
+    the plain drawing, which the page puts on white. style: GlycoDraw's options, such as highlight_motif."""
     try:
-        return {'svg': GlycoDraw(glycan, suppress = True, sticker = True).as_standalone_svg(), 'sticker': True}
+        return {'svg': GlycoDraw(glycan, suppress = True, sticker = True, **style).as_standalone_svg(), 'sticker': True}
     except TypeError:
-        return {'svg': GlycoDraw(glycan, suppress = True).as_svg(), 'sticker': False}
+        return {'svg': GlycoDraw(glycan, suppress = True, **style).as_svg(), 'sticker': False}
 
 
 def draw(glycan, GlycoDraw):
@@ -169,9 +171,9 @@ def answer(msg, GlycoDraw, tools):
     if isinstance(msg, list):
         return {glycan: draw(glycan, GlycoDraw) for glycan in msg}
     op = msg.get('op')
-    if op == 'full':
+    if op in ('full', 'highlight'):
         try:
-            return full(msg['glycan'], GlycoDraw)
+            return full(msg['glycan'], GlycoDraw, **({'highlight_motif': msg['motif']} if op == 'highlight' else {}))
         except Exception as e:
             return {'error': f'{type(e).__name__}: {e}'[:300]}
     if op == 'check':
