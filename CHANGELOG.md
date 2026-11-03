@@ -7,6 +7,7 @@ under `## Unreleased`; the version bump renames it.
 ## Unreleased
 
 - viscose figures, including glycowork's volcano plots and networks once it draws with viscose, are cut out as stickers in the console, like matplotlib's.
+- Clicking an error in the status bar goes to that error, and F8 and Shift+F8 stay in the file, where they could jump to a style finding in another tab.
 
 ## 0.2.2 (2026-10-31)
 

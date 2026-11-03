@@ -148,7 +148,7 @@ The settings panel (Ctrl+Alt+S) lists them too, with a Mac's keys on a Mac.
 | Ctrl+Alt+Left / Ctrl+Alt+Right | back / forward (also Alt+Left / Alt+Right and the mouse's buttons) |
 | Ctrl+F12 | file structure: the file's classes and functions |
 | Ctrl+Shift+Backspace | last edit location (press again for the one before) |
-| F8 | next style finding |
+| F8 / Shift+F8 | next / previous style finding in the file |
 
 In the console:
 

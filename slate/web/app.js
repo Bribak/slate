@@ -3012,6 +3012,18 @@ function dragSash(sash, onMove) {
   });
 }
 
+// The status bar's click: the error it names, else the next finding, always in the file in front
+function styleFinding() {
+  const tab = S.active;
+  if (!tab) return;
+  editor.focus();
+  const error = monaco.editor.getModelMarkers({resource: tab.model.uri, owner: 'style'}).find((m) => m.severity === monaco.MarkerSeverity.Error);
+  if (!error) { editor.trigger('status', 'editor.action.marker.next'); return; }
+  editor.setPosition({lineNumber: error.startLineNumber, column: error.startColumn});
+  editor.revealLineInCenterIfOutsideViewport(error.startLineNumber);
+  editor.getContribution('editor.contrib.markerController')?.showAtMarker(error);  // internal: without it, the cursor is still on the error
+}
+
 function updateStatus() {
   const tab = S.active;
   $('st-path').textContent = tab ? relPath(tab.path) : '';
@@ -3109,7 +3121,7 @@ const KEYS = [
     mac: {'f5': () => runFile(), 'shift+f10': () => runFile(), 'macctrl+r': () => runFile()}},
   {what: 'show or hide the console', keys: {'ctrl+`': () => toggleConsole()}, mac: {'macctrl+`': () => toggleConsole()}},
   {what: 'reformat to the coding standard', keys: {'shift+alt+f': null}},
-  {what: 'next style finding', keys: {'f8': null}},
+  {what: 'next / previous style finding in the file', keys: {'f8': null, 'shift+f8': null}},
   {what: 'find / replace in the file', keys: {'ctrl+f': null, 'ctrl+h': null}, mac: {'ctrl+f': null, 'ctrl+alt+f': null}},  // bindUi's `find`
   'Moving around',
   {what: 'go to definition', keys: {'f12': null, 'ctrl+click': null}},
@@ -3217,7 +3229,12 @@ function bindUi() {
   }
   $('st-settings').onclick = openSettings;
   $('st-table').onclick = () => toggleTable();
-  $('st-lint').onclick = () => { if (S.active) { editor.focus(); editor.trigger('status', 'editor.action.marker.nextInFiles'); } };
+  $('st-lint').onclick = styleFinding;
+  // Monaco's F8 is "next problem in files": in a file with nothing left below the cursor, that was another tab's finding
+  monaco.editor.addKeybindingRules([
+    {keybinding: monaco.KeyCode.F8, command: 'editor.action.marker.next', when: 'editorFocus'},
+    {keybinding: monaco.KeyMod.Shift | monaco.KeyCode.F8, command: 'editor.action.marker.prev', when: 'editorFocus'},
+  ]);
   dragSash($('side-sash'), (e) => { S.sidebarWidth = Math.max(140, Math.min(e.clientX, innerWidth - 300)); layout(); });
   dragSash($('console-sash'), (e) => { S.consoleHeight = Math.max(80, Math.min(innerHeight - e.clientY - 22, innerHeight - 150)); layout(); });
   editor.addAction({id: 'slate.reveal', label: 'Reveal in folder tree', keybindings: [monaco.KeyMod.Alt | monaco.KeyMod.Shift | monaco.KeyCode.KeyL],

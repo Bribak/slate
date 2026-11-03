@@ -171,6 +171,15 @@ def run(window):
     kept = js(window, edit)
     check('local history keeps what a save replaced', kept and js(window, f"api.history_text({json.dumps(str(OTHER))}, {json.dumps(kept[0]['id'])}).then((v) => v.text.trim())"), expect = 'x = 1')  # trimmed: write_text gave it CRLF on Windows
     check('last edit location', js(window, f"openFile({json.dumps(str(DEMO))}, {{line: 3}}).then(() => lastEdit()).then(() => [basename(S.active.path), editor.getPosition().lineNumber])"), expect = ['other.py', 1])
+    # demo.py's SyntaxWarning is another tab's finding: Monaco's "next problem in files" went there from the end of this file
+    broken = PROJECT / 'zz_broken.py'
+    broken.write_text('x = 1\nif x:\nprint(1)\ny = 2\nz = 3\n', encoding = 'utf-8')
+    js(window, f"openFile({json.dumps(str(broken))}).then(() => 1)")
+    check('the status bar names the error', until(window, "S.active.linted && $('st-lint').textContent", wait = 10), expect = '✕ IndentationError line 3')
+    js(window, "(editor.setPosition({lineNumber: 5, column: 1}), $('st-lint').click(), 1)")
+    check('its click goes to the error in that file', js(window, "[basename(S.active.path), editor.getPosition().lineNumber]"), expect = ['zz_broken.py', 3])
+    js(window, f"openFile({json.dumps(str(DEMO))}, {{line: 9}}).then(() => ($('st-lint').click(), 1))")
+    check('its click on findings stays in the file', until(window, "editor.getPosition().lineNumber === 7 && basename(S.active.path)", wait = 10), expect = 'demo.py')
     errors = js(window, "JSON.stringify(usage.events.filter((e) => /error/.test(e.kind)).map((e) => e.call || e.message))")
     check('no page or API errors', json.loads(errors or '["no answer"]'), expect = [])
 
