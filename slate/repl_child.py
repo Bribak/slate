@@ -71,11 +71,12 @@ def no_input(prompt = ''):
 
 def send_image(mime, data, width = None, height = None, figure = False):
     """data: bytes, or SVG text; width and height in CSS pixels (PNG and JPEG only, from the image when not given).
-    figure: a matplotlib figure, which the page shows as a die-cut sticker like the glycan drawings."""
+    figure: a plot from matplotlib or viscose, which the page shows as a die-cut sticker like the glycan drawings. Its PNG
+    has twice the pixels and is shown at half, sharp on high-DPI screens."""
     if isinstance(data, str):
         data = data.encode('utf-8')
     if mime == 'image/png' and width is None and data[12:16] == b'IHDR':
-        width, height = struct.unpack('>II', data[16:24])
+        width, height = (n // 2 if figure else n for n in struct.unpack('>II', data[16:24]))
     encoded = base64.b64encode(data).decode('ascii')
     if len(encoded) > MAX_IMAGE:
         print(f'({mime} of {len(data) // 1_000_000} MB not shown)')
@@ -85,10 +86,8 @@ def send_image(mime, data, width = None, height = None, figure = False):
 
 def send_figure(fig):
     buf = io.BytesIO()
-    fig.savefig(buf, format = 'png', dpi = fig.dpi * 2, bbox_inches = 'tight')  # twice the pixels, shown at half: sharp on high-DPI screens
-    data = buf.getvalue()
-    width, height = struct.unpack('>II', data[16:24])
-    send_image('image/png', data, width = width // 2, height = height // 2, figure = True)
+    fig.savefig(buf, format = 'png', dpi = fig.dpi * 2, bbox_inches = 'tight')
+    send_image('image/png', buf.getvalue(), figure = True)
 
 
 def show_figures(*args, **kwargs):
@@ -250,7 +249,8 @@ def dataframe_markdown(value):
 
 def show_rich(value):
     """Show the value if it can show itself (Jupyter's _repr_*_ methods, in JupyterLab's order of preference, or a matplotlib
-    figure); False otherwise. A GlycoDraw drawing shows as a die-cut sticker (glycan_sticker)."""
+    figure); False otherwise. A GlycoDraw drawing shows as a die-cut sticker (glycan_sticker). What viscose shows, its Figure
+    or what viscose.show_png displays, is a figure, known by its type's module, as matplotlib's are by savefig."""
     sticker = glycan_sticker(value)
     if sticker is not None:
         send_image('image/svg+xml', sticker[0], width = sticker[1], height = sticker[2])
@@ -284,7 +284,7 @@ def show_rich(value):
                 send({'md': markdown_stickers(data)})
             return True
         if data:
-            send_image(mime, data, width = meta.get('width'), height = meta.get('height'))
+            send_image(mime, data, width = meta.get('width'), height = meta.get('height'), figure = str(type(value).__module__).startswith('viscose.'))
             return True
     return False
 
@@ -301,9 +301,11 @@ def svg_figure(svg_data, chem = False, shadow = False, sticker = False):
     """glycowork's display_svg_with_matplotlib in the console (DisplaySwaps): the SVG as it is, which the page shows crisp,
     rather than rendered through glycorender into a matplotlib figure. That drew neither matplotlib's text nor the glycans
     annotate_figure puts on the dots of get_volcano and plot_network, so the volcano came out blank (glycowork 1.11.0 and
-    1.11.1). A matplotlib figure gets the figure sticker."""
+    1.11.1). A matplotlib or viscose figure gets the figure sticker: matplotlib names itself in its header, viscose in a
+    metadata element at the top of its SVG, which annotate_figure leaves in place."""
     svg = svg_data if isinstance(svg_data, str) else svg_data.as_svg()
-    send_image('image/svg+xml', svg, figure = 'matplotlib' in svg[:3000])
+    head = svg[:3000]
+    send_image('image/svg+xml', svg, figure = 'matplotlib' in head or '<metadata>viscose' in head)
 
 
 class DisplaySwaps:

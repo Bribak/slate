@@ -6,6 +6,8 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- viscose figures, including glycowork's volcano plots and networks once it draws with viscose, are cut out as stickers in the console, like matplotlib's.
+
 ## 0.2.2 (2026-10-31)
 
 - A GlycoDraw drawing shown in the console is a die-cut sticker on the dark background, instead of sitting on a white box.

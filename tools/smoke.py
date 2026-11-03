@@ -1,5 +1,5 @@
 """Check that slate works in a real window, on Windows, macOS and Linux: the page, the bridge, linting, the console, running a
-cell, a restored tab read only when shown, a traceback link, Markdown output with an inline image, the settings panel and its keys, a key, find after a diff
+cell, a restored tab read only when shown, a traceback link, Markdown output with an inline image, viscose figures as stickers, the settings panel and its keys, a key, find after a diff
 view, a second launch handing over a file, renaming a file (and moving one to the Trash on macOS and Linux), tables, local history
 and the last edit location.
 
@@ -109,6 +109,17 @@ def run(window):
                 "display(Note())")  # display() is a builtin, as in Jupyter; the image stands in for GlycoDraw's as_markdown()
     js(window, f"(consoleInput.setValue({json.dumps(markdown)}), submitConsole(), 1)")
     check('Markdown output with its image', until(window, "(document.querySelector('#console-out div.md b') && document.querySelector('#console-out div.md img.chip') || {}).naturalWidth"), expect = 10)
+    # A 2x2 PNG, as viscose's objects would show it; viscose itself is not on the runners
+    figures = ("import base64, sys\npng = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=')\n"
+               "class Plain:\n    def _repr_png_(self):\n        return png\n"
+               "class Png(Plain):\n    __module__ = 'viscose.figure'\n"
+               "display(Plain(), Png())\n"
+               "svg = '<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\">%s<rect width=\"10\" height=\"10\"/></svg>'\n"
+               "swap = sys.modules['__main__'].svg_figure\nswap(svg % '')\nswap(svg % '<metadata>viscose</metadata>')")
+    js(window, f"(consoleInput.setValue({json.dumps(figures)}), submitConsole(), 1)")
+    shown = "[...document.querySelectorAll('#console-out img.plot')].map((i) => i.className + ' ' + i.style.width).join('|')"
+    check('viscose figures get the sticker', until(window, f"(s => s.split('|').length === 4 && s)({shown})"),
+          expect = 'plot 2px|plot figure 1px|plot |plot figure ')
     check('settings panel lists Pythons', until(window, "openSettings().then(() => document.querySelectorAll('#settings select option').length)"))
     keys = "[...document.querySelectorAll('#settings .keys-row')].map((r) => r.textContent)"
     check('settings panel lists the keys', js(window, f"(rows => rows.length > 25 && rows.find((r) => r.includes('find in files')).split('find')[0])({keys})"),

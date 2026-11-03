@@ -2485,7 +2485,7 @@ const MAX_IMAGES = 40;
 function appendImage({mime, data, width, height, figure}) {
   const out = $('console-out');
   const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 30;
-  const img = el('img', figure ? 'plot figure' : 'plot');  // a matplotlib figure: a die-cut sticker, like the glycan drawings
+  const img = el('img', figure ? 'plot figure' : 'plot');  // a matplotlib or viscose figure: a die-cut sticker, like the glycan drawings
   img.src = `data:${mime};base64,${data}`;
   if (width) img.style.width = width + 'px';
   if (width && height) img.style.aspectRatio = `${width} / ${height}`;  // keeps its place while it decodes, so scrolling does not jump
