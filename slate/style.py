@@ -15,6 +15,7 @@ from pathlib import Path
 from slate import glycans, heap, hints, state
 
 DEFAULT_SCRIPT = Path.home() / 'Documents' / 'glycowork' / '.github' / 'scripts' / 'check_style.py'
+CONTRACT = ('check_blank_lines', 'check_kwarg_spacing')  # what every project's checker must define to be loaded; GW3 and pycodestyle are optional
 _modules, _signatures = {}, {}
 _file_sigs = None  # {script: {'mtime', 'files': {path: [mtime, signatures]}}}, kept in signatures.json between sessions
 _lock = threading.Lock()  # lint calls arrive on parallel threads while you type
@@ -31,13 +32,18 @@ def find_script(path, fallback = None):
 
 
 def load(script):
+    """The checker as a module, or None for one without the functions slate calls: a plain script does its work on import,
+    on whatever sys.argv holds, and its sys.exit would end the bridge thread with the page still waiting for an answer."""
     mtime = script.stat().st_mtime_ns
     cached = _modules.get(script)
     if cached and cached[0] == mtime:
         return cached[1]
-    spec = importlib.util.spec_from_file_location(f'slate_check_style_{len(_modules)}', script)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    defined = {n.name for n in ast.parse(script.read_text(encoding = 'utf-8')).body if isinstance(n, ast.FunctionDef)}
+    module = None
+    if defined.issuperset(CONTRACT):
+        spec = importlib.util.spec_from_file_location(f'slate_check_style_{len(_modules)}', script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
     _modules[script] = (mtime, module)
     return module
 
@@ -141,11 +147,14 @@ def _lint(path, source, fallback, glycan_check = True):
     if script is None:
         return {'markers': markers, 'note': 'no check_style.py found'}
     module = load(script)
+    if module is None:
+        return {'markers': markers, 'note': f'{script} is only a script: style checks need its {" and ".join(CONTRACT)}'}
     tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     report = lambda ln, code, msg: markers.append({'line': ln, 'col': 0, 'code': code, 'message': msg, 'severity': 'warning'})
     module.check_blank_lines(tree, source.splitlines(), tokens, report)
     module.check_kwarg_spacing(tokens, report)
-    module.check_positional_kwargs(tree, signatures(module, script, root), report)
+    if hasattr(module, 'check_positional_kwargs'):  # GW3 is not one of viscose's rules
+        module.check_positional_kwargs(tree, signatures(module, script, root), report)
     note = None
     if hasattr(module, 'pycodestyle_findings'):
         findings = module.pycodestyle_findings
@@ -167,7 +176,7 @@ def _format(path, source, fallback):
         raise ValueError('no check_style.py found for this file')
     module = load(script)
     if not hasattr(module, 'fix_source'):
-        raise ValueError(f'{script} predates --fix: update it to reformat')
+        raise ValueError(f'{script} has no fix_source, which reformatting needs')
     try:
         return module.fix_source(source)
     except (SyntaxError, tokenize.TokenError) as e:

@@ -882,9 +882,9 @@ function callAt(text) {
   const call = [...open].reverse().find((o) => o.c === '(');
   if (!call) return null;
   const before = text.slice(0, call.at);
-  const m = before.match(/((?:[A-Za-z_]\w*\s*\.\s*)*[A-Za-z_]\w*)\s*$/);
-  if (!m || /\b(def|class)\s+$/.test(before.slice(0, before.length - m[0].length))) return null;  // a definition, not a call
-  const parts = m[1].replace(/\s+/g, '').split('.');
+  const m = before.match(/((?:[A-Za-z_]\w*(?:\[[^\[\]]*\])?\s*\.\s*)*[A-Za-z_]\w*)\s*$/);  // axes[0].plot( is a method of axes's
+  if (!m || /(\b(def|class)\s+|\.\s*)$/.test(before.slice(0, before.length - m[0].length))) return null;  // a definition, not a call; or a method of what a call gave, f().g(, which is not the file's own g
+  const parts = m[1].replace(/\s+|\[[^\[\]]*\]/g, '').split('.');
   const kw = text.slice(call.arg).match(/^\s*([A-Za-z_]\w*)\s*=(?!=)/);
   return {name: parts.pop(), qualifier: parts.join('.') || null, index: call.commas, keyword: kw ? kw[1] : null};
 }
@@ -996,8 +996,9 @@ function registerProviders() {
       if (!word || !/^[A-Za-z_]/.test(word.word)) return null;
       const before = model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1);
       if (/#/.test(before.replace(/(['"]).*?\1/g, ''))) return null;  // in a comment
-      const q = before.match(/((?:[A-Za-z_]\w*\s*\.\s*)*[A-Za-z_]\w*)\s*\.\s*$/);
-      const found = await hintsFor(model, word.word, q ? q[1].replace(/\s+/g, '') : null);
+      const q = before.match(/((?:[A-Za-z_]\w*(?:\[[^\[\]]*\])?\s*\.\s*)*[A-Za-z_]\w*(?:\[[^\[\]]*\])?)\s*\.\s*$/);
+      if (!q && /\.\s*$/.test(before)) return null;  // a method of what a call gave
+      const found = await hintsFor(model, word.word, q ? q[1].replace(/\s+|\[[^\[\]]*\]/g, '') : null);
       if (!found.length) return null;
       return {range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
         contents: found.slice(0, 2).flatMap((d) => [{value: '```python\n' + d.label + '\n```'}, {value: hintDoc(d, true)}])};
@@ -1293,7 +1294,7 @@ function setupGlycans(saved) {
   // what is under the pointer: in the editor the event's target is Monaco's textarea, which it moves under the mouse.
   document.addEventListener('contextmenu', (e) => {
     const under = document.elementsFromPoint(e.clientX, e.clientY);
-    const img = under.find((n) => n.matches('.monaco-hover img, #table-view .tv-drawing img'));
+    const img = under.find((n) => n.matches('.monaco-hover img, #table-view .tv-drawing img, #table-view .tv-plot img'));
     if (img) { showMenu(e, [['Copy image', () => copyImage(img)]]); return; }
     const sticker = under.find((n) => n.classList.contains('glycan'));
     const drawn = sticker && [...glycans.drawn].find(([, d]) => sticker.classList.contains(d.cls.split(' ').pop()));
@@ -1490,7 +1491,8 @@ const TABLE_COLUMNS = 300;
 const NUMBER = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
 const EMPTY = /^(|na|nan|n\/a|none|null)$/i;
 const GROUP_COLORS = ['#4A88C7', '#CC7832', '#6A8759', '#9876AA', '#BBB529', '#C75450', '#2AACB8', '#C77BB0'];
-const table = {tab: null, version: null, refresh: () => {}};
+const table = {tab: null, version: null, refresh: () => {}, showGlycan: () => false};
+const analysis = {path: null};  // the table ▶ Analyze is running on, whose figures a click leads back to
 const collator = new Intl.Collator(undefined, {numeric: true});
 
 function delimiterOf(path, firstLine) {
@@ -1573,7 +1575,7 @@ function toggleTable(tab = S.active, on = !(tab && tab.tableView)) {
 function syncTable() {
   const tab = S.active, box = $('table-view');
   if (!tab || !tab.tableView || tab.model.isDisposed()) {
-    if (box) { box.remove(); table.tab = null; }
+    if (box) { box.remove(); table.tab = null; clearFigureMark(); }
     updateTableStatus();
     return;
   }
@@ -1590,6 +1592,7 @@ function updateTableStatus() {
 
 function showTable(tab) {
   if ($('table-view')) $('table-view').remove();
+  clearFigureMark();  // a rebuilt table has no row selected
   const text = tab.model.getValue(), delim = delimiterOf(tab.path, tab.model.getLineContent(1));
   const parsed = parseTable(text, delim), header = parsed.rows[0] || [], body = parsed.rows.slice(1), lines = parsed.lines.slice(1);
   const ncol = Math.min(TABLE_COLUMNS, Math.max(header.length, ...body.slice(0, 200).map((r) => r.length)));
@@ -1624,6 +1627,13 @@ function showTable(tab) {
     analyze.title = 'glycowork in the console: differential expression and a volcano plot for two sample groups, else a heatmap';
     analyze.onclick = () => analyzeTable(tab, samples);
     head.append(analyze);
+    if (body.length > 1) {
+      const cluster = el('button', 'hidden', '▦ Cluster');  // only once the project's Python turns out to have viscose
+      api.has_viscose(tableCwd(tab), S.roots).then((has) => cluster.classList.toggle('hidden', !has), () => {});
+      cluster.title = 'A clustered heatmap of each glycan\'s z-scores across the samples, in the console. Point at a cell for its glycan and value, click for its row';
+      cluster.onclick = () => clusterTable(tab, body.length, samples.length, glycanCol, body.some((r) => numeric.some((on, c) => on && header[c] && !isNumber(r[c] || ''))), Math.max(...sample.map((r) => (r[glycanCol] || '').length)));
+      head.append(cluster);
+    }
   }
   head.append(back);
   cols.style.width = rows.style.width = total + 'px';
@@ -1709,9 +1719,11 @@ function showTable(tab) {
     side.classList.remove('hidden');
     side.innerHTML = '';
     const cells = body[r], g = glycanCol !== undefined ? glycanOf(cells[glycanCol]) : null;
+    const rowName = glycanCol !== undefined ? (cells[glycanCol] || '').trim() : null;
+    markRowDot(rowName, tab.path, rowName ? body.slice(0, r).filter((other) => (other[glycanCol] || '').trim() === rowName).length : 0);
     const title = el('div', 'tv-title', glycanCol !== undefined ? cells[glycanCol] || '' : cells[0] || '');
     const close = el('button', 'tv-close', '✕');
-    close.onclick = () => { side.classList.add('hidden'); selected = -1; render(true); };
+    close.onclick = () => { side.classList.add('hidden'); selected = -1; clearFigureMark(); render(true); };
     side.append(close, title);
     if (g && g !== (cells[glycanCol] || '').trim()) side.append(el('div', 'tv-sub', g));
     const picture = el('div', 'tv-drawing'), card = el('div', 'tv-card');
@@ -1720,17 +1732,42 @@ function showTable(tab) {
     for (let c = 0; c < ncol; c++) if (numeric[c] && isNumber(cells[c] || '')) values.push([header[c] || `column ${c + 1}`, +cells[c]]);
     if (values.length) {
       const colors = groupColors(values.map(([n]) => n)), max = Math.max(...values.map(([, v]) => Math.abs(v))) || 1;
-      if (colors.size > 1 && colors.size < values.length) {  // each group's mean, when the columns form groups
-        const means = el('div', 'tv-means');
+      const grouped = colors.size > 1 && colors.size < values.length, plotted = grouped && g && !glycans.off && !glycans.noProcess;
+      const place = plotted ? (...nodes) => card.before(...nodes) : (...nodes) => side.append(...nodes);  // a plot and its numbers come right under the drawing
+      let means = null;
+      if (grouped) {  // each group's mean, when the columns form groups
+        means = el('div', 'tv-means');
         for (const [name, color] of colors) {
           const vs = values.filter(([n]) => groupOf(n) === name).map(([, v]) => v);
           const m = el('span', null, `${name}: ${(vs.reduce((a, b) => a + b, 0) / vs.length).toPrecision(3)} (${vs.length})`);
           m.style.color = color;
           means.append(m);
         }
-        side.append(el('div', 'tv-label', 'Mean per group'), means);
+        place(el('div', 'tv-label', 'Mean per group'), means);
       }
       const bars = el('div', 'tv-bars');
+      const barsLabel = el('div', 'tv-label', `${values.length} values`);
+      if (plotted) {
+        // A box per group from the drawing process, which already has viscose. The bars stay for a glycowork without it, and
+        // show after a moment if the process is busy or still starting; the plot replaces them when it comes
+        const groups = {}, plot = el('div', 'tv-plot');
+        for (const [name, v] of values) (groups[groupOf(name)] = groups[groupOf(name)] || []).push(v);
+        place(plot);
+        bars.classList.add('hidden');
+        barsLabel.classList.add('hidden');
+        const showBars = () => { bars.classList.remove('hidden'); barsLabel.classList.remove('hidden'); };
+        const waiting = setTimeout(showBars, 1000);
+        api.glycan_groups(groups, S.roots).then((reply) => {
+          clearTimeout(waiting);
+          if (!reply || !reply.svg) { showBars(); return; }
+          bars.classList.add('hidden');
+          barsLabel.classList.add('hidden');
+          for (const m of means.children) m.style.color = '';  // the page's colors for groups, which the plot's palette does not share
+          const img = el('img');
+          img.src = svgUrl(reply.svg);
+          plot.append(img);
+        }, () => { clearTimeout(waiting); showBars(); });
+      }
       for (const [name, v] of values) {
         const label = el('span', 'tv-bar-label', name), track = el('span', 'tv-track'), fill = el('span', 'tv-fill'), value = el('span', 'tv-bar-value', String(v));
         label.title = name;
@@ -1739,7 +1776,7 @@ function showTable(tab) {
         track.append(fill);
         bars.append(label, track, value);
       }
-      side.append(el('div', 'tv-label', `${values.length} values`), bars);
+      side.append(barsLabel, bars);
     }
     if (!g || glycans.off || glycans.noProcess) return;
     const [full, info] = await Promise.all([glycanFull(g), glycanCard(g)]);
@@ -1768,8 +1805,17 @@ function showTable(tab) {
   box.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (!side.classList.contains('hidden')) close(); else toggleTable(tab, false); }
   });
-  const close = () => { side.classList.add('hidden'); selected = -1; render(true); };
+  const close = () => { side.classList.add('hidden'); selected = -1; clearFigureMark(); render(true); };
   table.refresh = () => render(true);
+  table.showGlycan = (name, nth = 0) => {  // a dot on a live figure: its row in view with its panel open, the nth of that name when it repeats; false without such a row
+    let before = nth;
+    const r = glycanCol === undefined ? -1 : body.findIndex((cells) => (cells[glycanCol] || '').trim() === name && before-- === 0);
+    if (r < 0) return false;
+    if (!shown.includes(r)) { filter.value = ''; applyFilter(); }
+    scroll.scrollTop = Math.max(0, shown.indexOf(r) * TABLE_ROW - scroll.clientHeight / 2);
+    showRow(r);
+    return true;
+  };
   applyFilter();
   filter.focus();
 }
@@ -2433,7 +2479,39 @@ function analyzeTable(tab, samples) {
       'get_volcano(de)', "de[['Glycan', 'Log2FC', 'corr p-val', 'significant', 'Effect size']].head(10)"].join('\n')
     : `from glycowork.motif.analysis import get_heatmap\nget_heatmap(${path})`;
   const root = rootIndexOf(tab.path);
+  analysis.path = tab.path;
   runTyped(code, root >= 0 ? S.roots[root] : dirname(tab.path));
+}
+
+// One click from a table to a clustered heatmap, as code in the console like ▶ Analyze: each glycan's z-scores across the
+// samples, since abundances would show only the most abundant glycans. Rows without labels past CLUSTER_LABELS rows, or with a
+// glycan over CLUSTER_NAME characters (of the first 300 rows): an N-glycan's name would widen the page threefold and squeeze
+// the heatmap into a third of it, and many names thin out to a few anyway, while hovering shows each one. The color scale
+// stops at 3 from 11 samples on, where one outlier could otherwise pale all the rest; fewer samples cannot reach it. Missing
+// values stay empty, and count as the glycan's mean for clustering. Past CLUSTER_ROWS only the most variable glycans go in,
+// as the optimal leaf order takes 16 s at 2,000 and minutes from 5,000. A short table gets a shorter figure, whose cells would
+// otherwise stand taller than the console.
+const CLUSTER_LABELS = 50, CLUSTER_NAME = 90, CLUSTER_ROWS = 1000;
+function clusterTable(tab, rows, samples, glycanCol, missing, longest) {
+  if (isDirty(tab)) { toast('Save the table first: pandas reads it from the file'); return; }
+  const delim = delimiterOf(tab.path, tab.model.getLineContent(1)), path = /['\n]/.test(tab.path) || tab.path.endsWith('\\') ? JSON.stringify(tab.path) : `r'${tab.path}'`;
+  const sep = delim === ',' ? '' : `, sep = '${delim === '\t' ? '\\t' : delim}'`;
+  const options = [...(rows < 20 ? [`figsize = (8, ${(Math.max(rows, 3) * 0.25 + 2.5).toFixed(1)})`] : []), ...(samples > 10 ? ['vmin = -3', 'vmax = 3'] : []), ...(rows > CLUSTER_LABELS || longest > CLUSTER_NAME ? ['yticklabels = False'] : []), "xlabel = 'Samples', ylabel = 'Glycans', colorbar_label = 'z-score'"].join(', ');
+  const code = ['import pandas as pd', 'import viscose as vc', ...(missing ? ['from scipy.cluster.hierarchy import linkage'] : []),
+    `df = pd.read_csv(${path}${sep}, index_col = ${glycanCol}).select_dtypes('number')`,
+    ...(rows > CLUSTER_ROWS ? [`df = df[df.var(axis = 1).rank(ascending = False, method = 'first') <= ${CLUSTER_ROWS}]  # the most variable glycans`] : []),
+    'z = df.sub(df.mean(axis = 1), axis = 0).div(df.std(axis = 1).replace(0, 1), axis = 0)',
+    ...(missing ? ['filled = z.fillna(0)  # for clustering only; a missing value stays empty in the plot',
+      `fig, ax = vc.clustermap(z, row_linkage = linkage(filled, 'average', optimal_ordering = True), col_linkage = linkage(filled.T, 'average', optimal_ordering = True), ${options})`]
+      : [`fig, ax = vc.clustermap(z, ${options})`]), 'fig'].join('\n');
+  analysis.path = tab.path;
+  runTyped(code, tableCwd(tab));
+}
+
+// The folder the table view's code runs in, whose Python runs it
+function tableCwd(tab) {
+  const root = rootIndexOf(tab.path);
+  return root >= 0 ? S.roots[root] : dirname(tab.path);
 }
 
 function historyStep(step) {
@@ -2475,21 +2553,32 @@ function appendOut(text, cls) {
     if (part === '\n' || part === '\r\n') { outLine.textContent += '\n'; if (cls === 'e') linkTraceback(outLine); outLine = null; }
     else outLine.textContent += part;
   }
-  while (out.childNodes.length > 4000) out.firstChild.remove();
+  if (out.childNodes.length > 4000) {
+    while (out.childNodes.length > 4000) out.firstChild.remove();
+    placeFigureMark();
+  }
   if (atBottom) out.scrollTop = out.scrollHeight;
 }
 
 // Figures and drawings from the console (repl_child.py). An <img> never runs an SVG's scripts. Only the newest
 // MAX_IMAGES stay, so a plotting loop cannot fill the page's memory.
 const MAX_IMAGES = 40;
-function appendImage({mime, data, width, height, figure}) {
+function appendImage(image) {
+  const {mime, data, width, height, figure, saves, dots, palette, replaces} = image;
   const out = $('console-out');
+  const old = replaces && [...out.querySelectorAll('img.plot')].find((i) => i.dataset.saves === replaces);
+  if (old) { replaceImage(old, image); return; }
   const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 30;
   const img = el('img', figure ? 'plot figure' : 'plot');  // a matplotlib or viscose figure: a die-cut sticker, like the glycan drawings
   img.src = `data:${mime};base64,${data}`;
   if (width) img.style.width = width + 'px';
   if (width && height) img.style.aspectRatio = `${width} / ${height}`;  // keeps its place while it decodes, so scrolling does not jump
-  img.addEventListener('contextmenu', (ev) => showMenu(ev, [['Copy image', () => copyImage(img)]]));
+  const from = analysis.path;
+  const save = saves ? [null, ...['pdf', 'svg', 'png'].map((kind) => [`Save as ${kind.toUpperCase()}…`, () => saveFigure(img.dataset.saves, kind, from)])] : [];  // a figure repl_child.py can write
+  img.addEventListener('contextmenu', (ev) => showMenu(ev, [['Copy image', () => copyImage(img)], ...save]));
+  if (saves) img.dataset.saves = saves;
+  if (palette) offerPalettes(img, palette);
+  if (dots) liveFigure(img, dots, analysis.path);
   out.append(img);
   outLine = null;
   keepNewest(out);
@@ -2516,6 +2605,305 @@ function appendMarkdown(md) {
 function keepNewest(out) {
   const shown = out.querySelectorAll('img.plot, div.md');
   for (let i = 0; i < shown.length - MAX_IMAGES; i++) shown[i].replaceWith(el('span', 'sys', shown[i].tagName === 'IMG' ? '(older figure removed)\n' : '(older output removed)\n'));
+  if (figureTip.over && !figureTip.over.isConnected) hideFigureTip();
+  placeFigureMark();  // what was removed moved everything below it up
+}
+
+// Live figures: the dot under the mouse on a viscose figure, by repl_child.dot_map's positions, shown with a ring around it
+// and its values in a tip, and its drawing where its name is a glycan. Only a mousemove on the figure costs anything: one
+// pass over its dots, at most repl_child's MAX_DOTS (5,000).
+const DOT_REACH = 9;  // CSS pixels from a dot's center
+const GLYCAN_NAME = /^\S*\([abo?][\d?]?-[\d?][\d?|/,]*\)\S*$/;  // repl_child's LINKAGE in a word, as glycans in text are told
+const figureTip = {box: null, ring: null, over: null, dot: null};
+
+function hideFigureTip() {
+  if (figureTip.box) figureTip.box.classList.add('hidden');
+  if (figureTip.ring) figureTip.ring.classList.add('hidden');
+  figureTip.over = figureTip.dot = null;
+}
+
+// An axis name as viscose writes it, with _{sub} and ^{super}
+function axisName(text, fallback) {
+  const safe = (text || fallback).replace(/[&<>]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+  return safe.replace(/_\{([^}]*)\}/g, '<sub>$1</sub>').replace(/\^\{([^}]*)\}/g, '<sup>$1</sup>');
+}
+
+// The open table holding a dot's name, for a click: the table ▶ Analyze started from, else the front tab, else any other
+// that has been read. By the file's text, as a whole cell, so that hovering parses no table and a short glycan inside a
+// longer one's cell does not count.
+function tableOfDot(name, from) {
+  if (!name) return null;
+  const cell = `(^|[,;\\t"])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[,;\\t"])`;
+  const tabs = [S.tabs.find((t) => t.path === from), S.active, ...S.tabs];
+  return tabs.find((t) => t && isTableTab(t) && t.model && t.model.findMatches(cell, false, true, true, null, false, 1).length) || null;
+}
+
+// The other way round: the dot of the table's selected row stays marked on the plot, inside #console-out so that it scrolls
+// with the figure. The newest figure holding that name, one from this table first.
+const liveFigures = new WeakMap();  // img -> {page, axes, from}
+const figureMark = {el: null, img: null, dot: null, reveal: false};
+
+function clearFigureMark() {
+  if (figureMark.el) figureMark.el.remove();
+  figureMark.img = figureMark.dot = null;
+}
+
+function placeFigureMark() {
+  const {el: mark, img, dot} = figureMark;
+  if (!img) return;
+  if (!img.isConnected) { clearFigureMark(); return; }
+  const {page} = liveFigures.get(img), sx = img.clientWidth / page[0], sy = img.clientHeight / page[1];
+  mark.style.left = img.offsetLeft + dot[0] * sx + 'px';
+  mark.style.top = img.offsetTop + dot[1] * sy + 'px';
+  if (dot.band) {  // a row of a heatmap: as wide as the matrix, and tall enough to see on a row of a pixel or two
+    const w = dot.band[0] * sx, h = Math.max(dot.band[1] * sy, 7);
+    Object.assign(mark.style, {width: w + 'px', height: h + 'px', margin: `${-h / 2}px 0 0 ${-w / 2}px`});
+  } else Object.assign(mark.style, {width: '', height: '', margin: ''});
+}
+
+// A heatmap's row as a place to mark, in repl_child.cell_map's terms; its dot lies in the middle of the row
+function rowBand(grid, row) {
+  const w = grid.step[0] * grid.columns.length, h = grid.step[1];
+  return Object.assign([grid.origin[0] + w / 2, grid.origin[1] + (row + 0.5) * h], {band: [Math.abs(w), Math.abs(h)]});
+}
+
+function markFigureDot(img, dot) {
+  const out = $('console-out');
+  if (!figureMark.el) {
+    figureMark.el = el('div', 'figure-mark');
+    // A narrower console shrinks the figures, and a closed one that opens has a mark to bring into view. After the callback,
+    // as a change inside it is a ResizeObserver loop; not in a frame, which a covered window never gets
+    new ResizeObserver(() => setTimeout(() => { placeFigureMark(); revealFigureMark(); })).observe(out);
+  }
+  Object.assign(figureMark, {img, dot, reveal: true});
+  figureMark.el.classList.toggle('band', !!dot.band);
+  out.append(figureMark.el);
+  figureMark.el.style.animation = 'none';
+  placeFigureMark();
+  void figureMark.el.offsetWidth;  // so that the pulse starts again
+  figureMark.el.style.animation = '';
+  revealFigureMark();
+}
+
+function revealFigureMark() {
+  const out = $('console-out');
+  if (!figureMark.reveal || !figureMark.img || !out.clientHeight) return;
+  figureMark.reveal = false;
+  const top = figureMark.el.offsetTop - out.scrollTop;
+  if (top < 24 || top > out.clientHeight - 24) out.scrollTop = figureMark.el.offsetTop - out.clientHeight / 2;
+}
+
+function markRowDot(name, path, nth = 0) {
+  Object.assign(figureMark, {name, nth});
+  let other = null;
+  for (const img of [...document.querySelectorAll('#console-out img.plot.figure')].reverse()) {
+    const live = liveFigures.get(img);
+    let dot = null;
+    if (live && name) for (const a of live.axes) dot = dot || a.dots.find((d) => d[4] === name);
+    if (live && name && !dot) {
+      for (const grid of live.cells) {
+        const row = grid.rows.findIndex((n, r) => n === name && (!grid.nth || grid.nth[r] === nth));
+        if (row >= 0) { dot = rowBand(grid, row); break; }
+      }
+    }
+    if (dot && live.from === path) { markFigureDot(img, dot); return; }
+    if (dot && !other) other = [img, dot];
+  }
+  if (other) markFigureDot(...other);
+  else clearFigureMark();
+}
+
+// The cell under a page position, as a dot the tip and the click treat like any other, the same object while the mouse stays
+// in it. One lookup, however large the heatmap; its values come as base64 and are decoded on the first look.
+function cellAt(cells, x, y) {
+  for (const grid of cells) {
+    const [left, top, right, bottom] = grid.box;
+    if (x < left || x > right || y < top || y > bottom) continue;
+    const col = Math.floor((x - grid.origin[0]) / grid.step[0]), row = Math.floor((y - grid.origin[1]) / grid.step[1]);
+    if (row < 0 || col < 0 || row >= grid.rows.length || col >= grid.columns.length) continue;
+    if (typeof grid.values === 'string') {
+      const text = atob(grid.values), bytes = new Uint8Array(text.length);
+      for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+      grid.values = new Float32Array(bytes.buffer);
+    }
+    if (grid.last && grid.last.row === row && grid.last.col === col) return grid.last;
+    const value = grid.values[row * grid.columns.length + col];
+    const dot = [grid.origin[0] + (col + 0.5) * grid.step[0], grid.origin[1] + (row + 0.5) * grid.step[1], grid.columns[col] || String(col + 1),
+      Number.isNaN(value) ? 'missing' : String(Number(value.toPrecision(4))), grid.rows[row]];
+    grid.last = Object.assign(dot, {grid, row, col, axis: {x: grid.x === 'Samples' ? 'Sample' : grid.x || 'Column', y: grid.y || 'Value'}});
+    return dot;
+  }
+  return null;
+}
+
+function liveFigure(img, {page, axes, cells = []}, from) {
+  const attached = liveFigures.has(img) || img.dataset.live;
+  liveFigures.set(img, {page, axes, cells, from});
+  img.dataset.live = '1';
+  if (attached) return;  // a figure drawn again keeps its listeners, which read the new map
+  const dotAt = (ev) => {
+    const {page, axes, cells} = liveFigures.get(img) || {page: [1, 1], axes: [], cells: []};
+    const r = img.getBoundingClientRect(), sx = r.width / page[0], sy = r.height / page[1];
+    const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    let dot = null, axis = null, nearest = DOT_REACH * DOT_REACH;
+    for (const a of axes) {
+      for (const d of a.dots) {
+        const dx = d[0] * sx - mx, dy = d[1] * sy - my, far = dx * dx + dy * dy;
+        if (far < nearest) { nearest = far; dot = d; axis = a; }
+      }
+    }
+    if (!dot && cells.length) { dot = cellAt(cells, mx / sx, my / sy); axis = dot && dot.axis; }
+    return {dot, axis, r, sx, sy};
+  };
+  img.addEventListener('mousemove', (ev) => {
+    const {dot, axis, r, sx, sy} = dotAt(ev);
+    if (!dot) { hideFigureTip(); img.style.cursor = ''; return; }
+    if (dot === figureTip.dot && img === figureTip.over) return;
+    const target = tableOfDot(dot[4], from);
+    img.style.cursor = target ? 'pointer' : '';
+    showFigureTip(img, r, dot, axis, sx, sy, target);
+  });
+  img.addEventListener('mouseleave', hideFigureTip);
+  img.addEventListener('contextmenu', hideFigureTip);
+  img.addEventListener('click', (ev) => {
+    const {dot} = dotAt(ev), target = dot && tableOfDot(dot[4], from);
+    if (!target) return;
+    toggleTable(target, true);
+    if (table.tab !== target || !table.showGlycan(dot[4], dot.grid && dot.grid.nth ? dot.grid.nth[dot.row] : 0)) toast('This table has no row for exactly that glycan');
+    else markFigureDot(img, dot.grid ? rowBand(dot.grid, dot.row) : dot);  // this figure's dot, whichever figure is the newest with that glycan
+  });
+}
+
+// Another palette for a viscose figure on screen, without running its code again (repl_child.redraw_figure, Figure.in_palette).
+// While the mouse is on a figure, one small chip in its very corner, in the two hues of its palette, covers next to nothing;
+// pointing at the chip opens all four. One set of chips for all figures, inside #console-out so that it scrolls with them.
+const FIGURE_PALETTES = {lumen: ['#0B7A8C', '#F28C0F'], couture: ['#6E2A72', '#C9962E'], poster: ['#14704F', '#E8502A'], aura: ['#A3214E', '#128C8C']};
+const paletteChips = {box: null, img: null, timer: 0};
+
+function offerPalettes(img, palette) {
+  img.dataset.palette = palette;
+  img.addEventListener('mouseenter', () => showPaletteChips(img));
+  img.addEventListener('mouseleave', hidePaletteChips);
+}
+
+function showPaletteChips(img) {
+  clearTimeout(paletteChips.timer);
+  if (!img.dataset.palette) return;
+  if (!paletteChips.box) {
+    const box = paletteChips.box = el('div', 'figure-palettes');
+    for (const [name, [a, b]] of Object.entries(FIGURE_PALETTES)) {
+      const chip = el('button', 'figure-palette');
+      chip.dataset.palette = name;
+      chip.title = name[0].toUpperCase() + name.slice(1);
+      chip.style.background = `linear-gradient(135deg, ${a} 50%, ${b} 50%)`;
+      chip.onclick = () => redrawFigure(paletteChips.img, name);
+      box.append(chip);
+    }
+    box.addEventListener('mouseenter', () => clearTimeout(paletteChips.timer));
+    box.addEventListener('mouseleave', hidePaletteChips);
+  }
+  const {box} = paletteChips;
+  paletteChips.img = img;
+  $('console-out').append(box);
+  box.classList.remove('hidden');
+  for (const chip of box.children) chip.classList.toggle('on', chip.dataset.palette === img.dataset.palette);
+  box.style.left = img.offsetLeft + img.clientWidth - 4 + 'px';  // its right edge, as it grows to the left (style.css)
+  box.style.top = img.offsetTop + 4 + 'px';
+}
+
+function hidePaletteChips() {
+  clearTimeout(paletteChips.timer);
+  paletteChips.timer = setTimeout(() => paletteChips.box && paletteChips.box.classList.add('hidden'), 250);  // time to reach the chips
+}
+
+async function redrawFigure(img, palette) {
+  if (!img || !img.isConnected || img.dataset.palette === palette) return;
+  img.classList.add('redrawing');
+  try {
+    if (await api.redraw_figure(img.dataset.saves, palette) === false) {
+      img.classList.remove('redrawing');
+      toast('The console that made this figure has restarted, so it can only be copied now');
+    }
+  } catch (e) {
+    img.classList.remove('redrawing');
+    toast(`Could not draw the figure again: ${errMsg(e)}`);
+  }
+}
+
+// The same figure in its new palette, in the old one's place
+function replaceImage(img, {mime, data, width, height, saves, dots, palette}) {
+  const live = liveFigures.get(img), {name, nth} = figureMark, marked = figureMark.img === img;
+  hideFigureTip();
+  img.src = `data:${mime};base64,${data}`;
+  img.style.width = width ? width + 'px' : '';
+  img.style.aspectRatio = width && height ? `${width} / ${height}` : '';
+  img.dataset.saves = saves || '';
+  img.dataset.palette = palette || '';
+  img.classList.remove('redrawing');
+  if (dots) liveFigure(img, dots, live && live.from);
+  else liveFigures.delete(img);
+  img.addEventListener('load', () => {
+    if (paletteChips.img === img && paletteChips.box && !paletteChips.box.classList.contains('hidden')) showPaletteChips(img);
+    if (marked && figureMark.img === img && name) markRowDot(name, live && live.from, nth);
+    else placeFigureMark();
+  }, {once: true});
+}
+
+function showFigureTip(img, r, dot, axis, sx, sy, target) {
+  if (!figureTip.box) {
+    figureTip.box = el('div', 'figure-tip hidden');
+    figureTip.ring = el('div', 'figure-ring hidden');
+    document.body.append(figureTip.ring, figureTip.box);
+    $('console-out').addEventListener('scroll', hideFigureTip, {passive: true});  // the mouse may stay on the figure, which moves away from under it
+  }
+  figureTip.over = img;
+  figureTip.dot = dot;
+  const {box, ring} = figureTip, name = dot[4], left = r.left + dot[0] * sx, top = r.top + dot[1] * sy;
+  box.innerHTML = '';
+  const picture = el('div', 'figure-tip-drawing');
+  if (name) box.append(picture, el('div', 'figure-tip-name', name));
+  for (const [label, value] of [...(dot.grid && !name ? [['Row', String(dot.row + 1)]] : []), [axisName(axis.x, 'x'), dot[2]], [axisName(axis.y, 'y'), dot[3]]]) {
+    const row = el('div', 'figure-tip-row'), key = el('span');
+    key.innerHTML = label;
+    row.append(key, el('b', null, value));
+    box.append(row);
+  }
+  if (target) box.append(el('div', 'figure-tip-hint', `Click to open its row in ${basename(target.path)}`));
+  ring.style.left = left + 'px';
+  ring.style.top = top + 'px';
+  ring.classList.toggle('cell', !!dot.grid);
+  if (dot.grid) {  // around the cell, however small it is drawn
+    const w = Math.max(Math.abs(dot.grid.step[0]) * sx, 8), h = Math.max(Math.abs(dot.grid.step[1]) * sy, 8);
+    Object.assign(ring.style, {width: w + 'px', height: h + 'px', margin: `${-h / 2}px 0 0 ${-w / 2}px`});
+  } else Object.assign(ring.style, {width: '', height: '', margin: ''});
+  ring.classList.remove('hidden');
+  box.classList.remove('hidden');
+  const place = () => {  // beside the dot, on the side with room, whenever the tip's size changes
+    const w = box.offsetWidth, h = box.offsetHeight;
+    box.style.left = (left + 14 + w < innerWidth - 4 ? left + 14 : Math.max(4, left - 14 - w)) + 'px';
+    box.style.top = Math.max(4, Math.min(top - h / 2, innerHeight - h - 4)) + 'px';
+  };
+  place();
+  const glycan = glycans.ids.get(name) || name;  // a GlyTouCan ID, which the table view has looked up
+  if (glycan && GLYCAN_NAME.test(glycan) && !glycans.off && !glycans.noProcess) {
+    glycanFull(glycan).then((full) => {
+      if (!full || figureTip.dot !== dot) return;
+      const drawing = el('img');
+      drawing.src = full.url;
+      drawing.style.width = Math.min(full.size[0], 280) + 'px';
+      drawing.addEventListener('load', place, {once: true});
+      picture.append(drawing);
+    });
+  }
+}
+
+// The dialog opens beside the table ▶ Analyze started from, named after it, else in the project as figure
+async function saveFigure(figure, kind, from) {
+  try {
+    if (await api.save_figure(figure, kind, from ? dirname(from) : consoleCwd(), from ? basename(from).replace(/\.[^.]+$/, '') : 'figure') === false) toast('The console that made this figure has restarted, so it can only be copied now');
+  } catch (e) {
+    toast(`Could not save the figure: ${errMsg(e)}`);
+  }
 }
 
 async function copyImage(img) {
@@ -2544,7 +2932,8 @@ window.slate = {
       else if (kind === 'md') appendMarkdown(payload);
       else if (kind === 'ready') { appendOut(`Python ${payload} · variables persist until Restart · Enter runs, Shift+Enter adds a line\n`, 'sys'); nameConsole(payload); }
       else if (kind === 'sys') appendOut(payload + '\n', 'sys');
-      else if (kind === 'done') consoleBusy = Math.max(0, consoleBusy - 1);
+      else if (kind === 'saved') appendSaved(payload);
+      else if (kind === 'done') { consoleBusy = Math.max(0, consoleBusy - 1); if (!consoleBusy) analysis.path = null; }
       // exit() sends 'exit' and then 'stopped' with code 0, which needs no second line
       else if (kind === 'exit') appendOut('exit() called; the next command starts a fresh interpreter\n', 'sys');
       else if (kind === 'stopped') { consoleBusy = 0; if (payload !== 0) appendOut(`interpreter stopped${payload != null ? ` (exit code ${payload})` : ''}\n`, 'sys'); }
@@ -2565,6 +2954,16 @@ function nameConsole(ready) {
 }
 
 // A traceback's 'File "...", line N' opens the file at that line.
+function appendSaved(path) {  // a figure's file, one click from its folder
+  const out = $('console-out'), atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 30;
+  const line = el('span', 'sys link', `Saved ${path}\n`);
+  line.title = revealLabel();
+  line.addEventListener('click', () => api.reveal(path));
+  out.append(line);
+  outLine = null;
+  if (atBottom) out.scrollTop = out.scrollHeight;
+}
+
 function linkTraceback(span) {
   const m = span.textContent.match(/^\s*File "([^"<>]+)", line (\d+)/);
   if (!m) return;
@@ -2779,6 +3178,13 @@ async function openSettings() {
   restart.className = 'hidden';
   restart.onclick = () => { restart.classList.add('hidden'); if (!S.consoleOpen) toggleConsole(true, false); restartConsole(); };
   body.append(el('div', 'settings-note', keyText("A project's Python runs code from its files (Ctrl+Enter, F5) and the console when it starts or restarts with one of its files in front. Any Python 3.8 or newer works; packages come from it.")), restart);
+  const palette = el('select');
+  const palettes = [['', 'As the code says'], ['lumen', 'Lumen · peacock and marigold'], ['couture', 'Couture · plum and gold'], ['poster', 'Poster · forest and vermilion'], ['aura', 'Aura · burgundy and teal']];
+  if (v.figure_palette && !palettes.some(([name]) => name === v.figure_palette)) palettes.push([v.figure_palette, v.figure_palette]);
+  for (const [name, text] of palettes) { const o = el('option', null, text); o.value = name; palette.append(o); }
+  palette.value = v.figure_palette || '';
+  palette.onchange = () => set('figure_palette', palette.value || null);
+  row('Figure palette', palette, "for new viscose figures, glycowork's plots among them, unless the code picks one");
 
   section('Editor');
   check('Save changed files when slate loses focus', S.autosave, (on) => { S.autosave = on; persist(); });

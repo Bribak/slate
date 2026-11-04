@@ -85,7 +85,7 @@ def answer_by_message():
     def answer(window, func, name, params, call_id):
         try:
             text, failed = json.dumps(func(*params)), '0'
-        except Exception as e:
+        except (Exception, SystemExit) as e:  # without an answer the page waits forever, and a lint that waits stops the whole queue
             util.logger.error(traceback.format_exc())
             text, failed = json.dumps({'message': str(e), 'name': type(e).__name__, 'stack': traceback.format_exc()}), '1'
         post(window, f'slate-answer\n{name}\n{call_id}\n{failed}\n{text}')

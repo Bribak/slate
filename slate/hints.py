@@ -17,6 +17,9 @@ from slate import heap, state, workspace
 
 RESCAN = 10  # seconds between checks of a folder's file times
 MAX_DOC = 1500
+VISCOSE_MODULES = ('viscose', 'glycowork')  # glycowork's subplots is viscose's at glycowork's figure size
+VISCOSE_MAKERS = {'subplots': ('Figure', 'Axes'), 'clustermap': ('Figure', 'Axes'), 'Figure': ('Figure',), 'add_axes': ('Axes',)}
+VISCOSE_CLASSES = {'Figure': 'viscose.figure', 'Axes': 'viscose.axes'}
 _lock = threading.Lock()
 _files = None  # {path: [mtime, module, definitions]} for package files on disk, kept in hints.json
 _open = {}  # {path key: (definitions, imports)} from the newest text of open files that parsed
@@ -112,10 +115,61 @@ def statements(body):
             yield from statements(case.body)
 
 
-def definitions(tree, lines):
+def viscose_objects(nodes, imports):
+    """{name: class} for the viscose objects a file makes, as `fig, ax = vc.subplots()`: nearly all of viscose is methods of
+    these two, which a name alone cannot resolve. Also `ax = fig.add_axes(...)`, `fig = vc.Figure()`, and `for ax in axes`
+    (or `axes.flat`). A name also assigned anything else is left out, as in a file that plots with matplotlib too, since a
+    hint for the wrong function is worse than none."""
+    if not any(module.split('.')[0] in VISCOSE_MODULES for module, _ in imports.values()):
+        return {}
+    found, others = {}, set()
+
+    def from_viscose(name):
+        return name in imports and imports[name][0].split('.')[0] in VISCOSE_MODULES
+
+    def assign(target, value):
+        value = value.body if isinstance(value, ast.IfExp) else value  # fig, axes = subplots(1, 2) if two else subplots()
+        func = value.func if isinstance(value, ast.Call) else None
+        names = target.elts if isinstance(target, ast.Tuple) else [target]
+        made = ()
+        if isinstance(func, ast.Name) and from_viscose(func.id):
+            made = VISCOSE_MAKERS.get(func.id, ())
+        elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.attr in VISCOSE_MAKERS:
+            if from_viscose(func.value.id) or found.get(func.value.id) == 'Figure':
+                made = VISCOSE_MAKERS[func.attr]
+        else:  # ax = axes[0], or left, right = axes
+            panels = value.value if isinstance(value, ast.Subscript) else value
+            if isinstance(panels, ast.Name) and found.get(panels.id) == 'Axes':
+                made = ('Axes',) * len(names)
+        for i, name in enumerate(names):
+            if isinstance(name, ast.Name):
+                if i < len(made) and len(names) == len(made):
+                    found[name.id] = made[i]
+                else:
+                    others.add(name.id)
+
+    def loop(target, over):
+        while isinstance(over, ast.Call) or (isinstance(over, ast.Attribute) and over.attr in ('flat', 'ravel', 'flatten')):
+            over = over.func if isinstance(over, ast.Call) else over.value
+        if isinstance(target, ast.Name):
+            if isinstance(over, ast.Name) and found.get(over.id) == 'Axes':
+                found[target.id] = 'Axes'
+            else:
+                others.add(target.id)
+    for node in sorted((n for n in nodes if isinstance(n, (ast.Assign, ast.For))), key = lambda n: n.lineno):
+        if isinstance(node, ast.For):
+            loop(node.target, node.iter)
+        else:
+            for target in node.targets:
+                assign(target, node.value)
+    return {name: made for name, made in found.items() if name not in others}
+
+
+def definitions(tree, lines, known = None):
     """({name: [description]}, {local name: [module, attribute or None]}) for a module: its functions, classes and their
     methods, also under `if`/`try` (try: import torch ... except ImportError), and what it imports under which name,
-    including the imports inside functions that glycowork uses against circular imports (module-level ones win)."""
+    including the imports inside functions that glycowork uses against circular imports (module-level ones win). A viscose
+    object counts as its class imported under that name. known: imports already seen, for the console's history."""
     defs, imports = {}, {}
 
     def visit(body, cls):
@@ -131,13 +185,16 @@ def definitions(tree, lines):
             elif isinstance(node, ast.Try):
                 visit(node.body + [n for h in node.handlers for n in h.body] + node.orelse + node.finalbody, cls)
     visit(tree.body, None)
-    for node in [*tree.body, *statements(tree.body)]:  # module-level imports first, so they win over a function's
+    nodes = [*tree.body, *statements(tree.body)]
+    for node in nodes:  # module-level imports first, so they win over a function's
         if isinstance(node, ast.Import):
             for a in node.names:
                 imports.setdefault(a.asname or a.name.split('.')[0], [a.name if a.asname else a.name.split('.')[0], None])
         elif isinstance(node, ast.ImportFrom):
             for a in node.names:
                 imports.setdefault(a.asname or a.name, ['.' * node.level + (node.module or ''), a.name])
+    for name, cls in viscose_objects(nodes, {**(known or {}), **imports}).items():
+        imports.setdefault(name, [VISCOSE_CLASSES[cls], cls])
     return defs, imports
 
 
@@ -165,41 +222,73 @@ def _save():
         pass  # only the next session's first hint gets slower
 
 
-def _scan(roots, libraries = None):
-    """Read every package file of the folders, and of the installed libraries ({name: folder}), that changed since it was
-    last read (at most every RESCAN seconds)."""
-    global _version
-    _load()
-    changed = False
-    for root, only in [(r, None) for r in roots] + [(folder, name) for name, folder in (libraries or {}).items()]:
-        key = (root, only)
-        if time.time() - _scanned.get(key, 0) < RESCAN:
-            continue
-        _scanned[key] = time.time()
+def _python_files(package):
+    """{path: mtime} of a package's .py files. WALK_SKIP's names are left out below it, and an installed library's site-packages
+    is above it. os.scandir, as glycontact's package holds 14,117 entries, mostly data: rglob with a stat of each .py took
+    430-500 ms there, every RESCAN, and this 190."""
+    found, stack = {}, [package]
+    while stack:
         try:
-            folders = [Path(root) / only] if only else [d for d in Path(root).iterdir() if d.is_dir()]  # a library by its name: listing site-packages (949 entries) took 230-290 ms per library and rescan
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    if entry.name.endswith('.py') and entry.is_file():
+                        found[entry.path] = str(entry.stat().st_mtime_ns)
+                    elif entry.is_dir() and entry.name not in workspace.WALK_SKIP:
+                        stack.append(entry.path)
+        except OSError:
+            continue
+    return found
+
+
+def _refresh(due):
+    """Read every package file of due's folders (root, a library's name or None) that changed since it was last read, without
+    _lock, then take it to update the index, dropping the files that are gone."""
+    global _version
+    fresh, gone = {}, []
+    for root, only in due:
+        try:
+            folders = [Path(root) / only] if only else [d for d in Path(root).iterdir() if d.is_dir() and d.name not in workspace.WALK_SKIP]  # a library by its name: listing site-packages (949 entries) took 230-290 ms per library and rescan
             packages = [d for d in folders if (d / '__init__.py').is_file()]  # as style.signatures: not a .venv's thousands of files
         except OSError:
             continue
-        for f in (f for p in packages for f in p.rglob('*.py') if not workspace.WALK_SKIP & set(f.relative_to(root).parts)):  # below root: an installed library sits in site-packages
-            try:
-                mtime = str(f.stat().st_mtime_ns)
-            except OSError:
-                continue
-            key = str(f)
-            if key in _files and _files[key][0] == mtime:
-                continue
-            try:
-                source = f.read_text(encoding = 'utf-8')
-                with heap.paused():
-                    found = definitions(ast.parse(source), source.splitlines())[0]
-            except (OSError, ValueError, SyntaxError):
-                found = {}
-            _files[key] = [mtime, module_of(f, root), found]
-            changed = True
-    if changed:
-        _version += 1
-        _save()
+        for package in packages:
+            files = _python_files(str(package))
+            below = os.path.join(str(package), '')
+            gone += [path for path in list(_files) if path.startswith(below) and path not in files]
+            for path, mtime in files.items():
+                if path in _files and _files[path][0] == mtime:
+                    continue
+                try:
+                    source = Path(path).read_text(encoding = 'utf-8')
+                    with heap.paused():
+                        found = definitions(ast.parse(source), source.splitlines())[0]
+                except (OSError, ValueError, SyntaxError):
+                    found = {}
+                fresh[path] = [mtime, module_of(path, root), found]
+    if fresh or gone:
+        with _lock:
+            _files.update(fresh)
+            for path in gone:
+                _files.pop(path, None)
+            _version += 1
+            _save()
+
+
+def _scan(roots, libraries = None):
+    """Bring the index of the folders, and of the installed libraries ({name: folder}), up to date at most every RESCAN seconds.
+    A folder with nothing indexed yet is read now, as the hint being asked for may be in it. Any other is read on a thread of
+    its own, so that no hint waits for it: with glycontact among the folders, the hint that came due took about 490 ms. Called
+    without _lock."""
+    with _lock:
+        _load()
+        due = [pair for pair in [(r, None) for r in roots] + [(folder, name) for name, folder in (libraries or {}).items()] if time.time() - _scanned.get(pair, 0) >= RESCAN]
+        _scanned.update((pair, time.time()) for pair in due)
+        indexed = lambda root, only: any(path.startswith(os.path.join(str(Path(root) / only if only else Path(root)), '')) for path in _files)
+        known = [pair for pair in due if indexed(*pair)]
+    if len(known) < len(due):
+        _refresh([pair for pair in due if pair not in known])
+    if known:
+        threading.Thread(target = _refresh, args = (known,), daemon = True).start()
 
 
 def remember(path, tree, source):
@@ -250,7 +339,7 @@ def _console_context(entries):
         defs, imports = {}, {}
         for code in entries:
             try:
-                d, i = definitions(ast.parse(code), code.splitlines())
+                d, i = definitions(ast.parse(code), code.splitlines(), known = imports)
             except (SyntaxError, ValueError):
                 continue
             for name, found in d.items():
@@ -263,8 +352,8 @@ def _console_context(entries):
 def lookup(path, name, qualifier = None, roots = (), console = None, libraries = None):
     """Descriptions of what `qualifier.name` is at a call in path (or in the console, given its history), best first.
     libraries: {name: folder} of the lab's libraries where the console's Python installed them (libraries.py)."""
+    _scan(list(roots), libraries = libraries)
     with _lock:
-        _scan(list(roots), libraries = libraries)
         sources = list(roots) + list((libraries or {}).values())
         if console is not None:
             defs, imports = _console_context(console)
@@ -280,8 +369,16 @@ def lookup(path, name, qualifier = None, roots = (), console = None, libraries =
             if head not in imports:
                 return []  # a method of some object, which cannot be resolved by name alone
             module, attr = imports[head]
-            module = _absolute(module, path) + (f'.{attr}' if attr else '') + (f'.{rest}' if rest else '')
-            return [d for d in _module(module, sources).get(name, []) if d['kind'] != 'method']
+            base = _absolute(module, path)
+            if attr and not rest:  # a class, or an object of one (viscose_objects)
+                methods = [d for d in _module(base, sources).get(name, []) if d['kind'] == 'method' and d['owner'] == attr]
+                if methods:
+                    return methods
+            module = base + (f'.{attr}' if attr else '') + (f'.{rest}' if rest else '')
+            found = [d for d in _module(module, sources).get(name, []) if d['kind'] != 'method']
+            if not found and not attr and not rest:  # re-exported by a package's __init__, as vc.subplots: the same name anywhere in that top-level package
+                found = [d for _, m, f in _within(sources) if m.split('.')[0] == module.split('.')[0] for d in f.get(name, []) if d['kind'] != 'method'][:5]
+            return found
         local = [d for d in defs.get(name, []) if d['kind'] != 'method']
         if local or name not in imports:
             return local[:5]

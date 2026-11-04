@@ -1,7 +1,7 @@
 """Check that slate works in a real window, on Windows, macOS and Linux: the page, the bridge, linting, the console, running a
-cell, a restored tab read only when shown, a traceback link, Markdown output with an inline image, viscose figures as stickers, the settings panel and its keys, a key, find after a diff
-view, a second launch handing over a file, renaming a file (and moving one to the Trash on macOS and Linux), tables, local history
-and the last edit location.
+cell, a restored tab read only when shown, a traceback link, Markdown output with an inline image, viscose figures as stickers, live figures, saving them and redrawing them in another palette, the figure palette,
+the settings panel and its keys, a key, find after a diff view, a second launch handing over a file, renaming a file (and moving one to the Trash on macOS and Linux), tables and
+a row's panel, local history and the last edit location.
 
 python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
 
@@ -32,6 +32,10 @@ OTHER = PROJECT / 'other.py'
 OTHER.write_text('x = 1\n', encoding = 'utf-8')
 UNREAD = PROJECT / 'unread.py'
 UNREAD.write_text('y = 2\n', encoding = 'utf-8')
+SCRIPTED = PROJECT / 'scripted' / 'module.py'  # a project whose check_style.py does its work on import and exits, as viscose's did
+(SCRIPTED.parent / '.github' / 'scripts').mkdir(parents = True)
+(SCRIPTED.parent / '.github' / 'scripts' / 'check_style.py').write_text('import sys\nsys.exit("a script")\n', encoding = 'utf-8')
+SCRIPTED.write_text('x = 1\n', encoding = 'utf-8')
 state.save({'roots': [str(PROJECT)], 'tabs': [{'path': str(DEMO)}, {'path': str(UNREAD)}], 'active': str(DEMO), 'autosave': False, 'consoleOpen': True,
             'usage_log': False, 'update_check': False})
 import webview
@@ -98,6 +102,7 @@ def run(window):
     colors = "S.active.model.getAllDecorations().map((d) => d.options.inlineClassName).filter((c) => /^snfg-(purple|yellow|blue)$/.test(c || '')).length"
     check('glycan residues in SNFG colours', until(window, colors, wait = 10), expect = 3)  # page only, so without glycowork too; only the front file has them
     check('lint marks the SyntaxWarning', until(window, "S.active.linted && (S.active.markers || []).some((m) => m.line === 7) && 1"), expect = 1)  # also style findings where a glycowork checkout is
+    check('a checker that is only a script is left alone', until(window, f"api.lint({json.dumps(str(SCRIPTED))}, 'x = 1\\n', false).then((r) => r.note.includes('only a script') && 1)", wait = 10), expect = 1)
     check('cells marked', js(window, "S.active.model.getAllDecorations().filter((d) => d.options.className === 'cell-head').length"), expect = 2)
     js(window, 'editor.setPosition({lineNumber: 2, column: 1}) || runAtCursor(true) || 1')
     check('cell ran in the console', until(window, "$('console-out').innerText.includes('smoke 42 project') && 1"), expect = 1)
@@ -120,7 +125,38 @@ def run(window):
     shown = "[...document.querySelectorAll('#console-out img.plot')].map((i) => i.className + ' ' + i.style.width).join('|')"
     check('viscose figures get the sticker', until(window, f"(s => s.split('|').length === 4 && s)({shown})"),
           expect = 'plot 2px|plot figure 1px|plot |plot figure ')
+    live = ("(async () => { const n = document.querySelectorAll('#console-out img.plot').length;"
+            " appendImage({mime: 'image/svg+xml', data: btoa('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><rect width=\"100\" height=\"100\"/></svg>'), figure: true,"
+            " dots: {page: [100, 100], axes: [{x: 'log_{2} <FC>', y: '', dots: [[50, 50, '1.5', '2.5']]}]}});"
+            " const img = document.querySelectorAll('#console-out img.plot')[n]; await img.decode(); img.scrollIntoView(); const r = img.getBoundingClientRect();"
+            " const move = (dx, dy) => img.dispatchEvent(new MouseEvent('mousemove', {clientX: r.left + 50 + dx, clientY: r.top + 50 + dy}));"
+            " move(3, -3); const near = figureTip.box.classList.contains('hidden') ? null : figureTip.box.querySelector('sub').textContent + figureTip.box.innerText.replace(/\\s+/g, ' ');"
+            " move(30, 30); const hidden = figureTip.box.classList.contains('hidden'); img.remove(); return [near, hidden]; })()")
+    check('a figure names the dot under the mouse', js(window, live), expect = ['2log2 <FC> 1.5 y 2.5', True])
+    saved = HOME / 'saved.svg'
+    window.create_file_dialog = lambda *args, **kwargs: (str(saved),)  # a dialog nobody could answer here
+    js(window, "([...document.querySelectorAll('#console-out img.plot.figure')].pop().dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, clientX: 10, clientY: 10})), [...$('menu').children].find((d) => d.textContent === 'Save as SVG…').click(), 1)")
+    check('a figure saved from its menu', until(window, "$('console-out').innerText.includes('Saved ') && 1", wait = 10) and '<metadata>viscose' in saved.read_text(encoding = 'utf-8'))
+    # A stand-in with what redraw_figure asks of viscose's Figure, which the runners do not have
+    redrawable = ("import types\nclass Fig:\n    __module__ = 'viscose.figure'\n    axes = []\n    def __init__(self, name):\n        self.pal = types.SimpleNamespace(name = name)\n"
+                  "    def in_palette(self, name):\n        return Fig(name)\n    def to_svg(self):\n        return '<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"30\"><metadata>viscose</metadata><title>' + self.pal.name + '</title></svg>'\n"
+                  "    def to_png(self, dpi = 144.0):\n        return png\ndisplay(Fig('poster'))")
+    js(window, f"(consoleInput.setValue({json.dumps(redrawable)}), submitConsole(), 1)")
+    newest = "[...document.querySelectorAll('#console-out img.plot.figure')].pop()"
+    check('a figure offers other palettes', until(window, f"{newest}.dataset.palette", wait = 10), expect = 'poster')
+    count = "document.querySelectorAll('#console-out img.plot').length"
+    before = js(window, count)
+    js(window, f"(showPaletteChips({newest}), [...paletteChips.box.children].find((c) => c.dataset.palette === 'aura').click(), 1)")
+    check('a figure redrawn in another palette, in place', until(window, f"{newest}.dataset.palette === 'aura' && {count}", wait = 10), expect = before)
+    js(window, "(paletteChips.box.classList.add('hidden'), 1)")
+    stand_in = "import sys, types\nsys.modules['viscose.palettes'] = types.SimpleNamespace(set_palette = lambda name: print('palette is', name))"
+    js(window, f"(consoleInput.setValue({json.dumps(stand_in)}), submitConsole(), 1)")
+    js(window, "api.set_setting('figure_palette', 'poster').then(() => 1)")
+    check('the figure palette reaches a running console', until(window, "$('console-out').innerText.includes('palette is poster') && 1", wait = 10), expect = 1)
+    js(window, "api.set_setting('figure_palette', null).then(() => 1)")
+    check('call hints know a method from a call', json.loads(js(window, "JSON.stringify([callAt('axes[0].plot(').qualifier, callAt('a.b.c(').qualifier, callAt('f().g('), callAt('d[k][0].e(')])") or 'null'), expect = ['axes', 'a.b', None, None])
     check('settings panel lists Pythons', until(window, "openSettings().then(() => document.querySelectorAll('#settings select option').length)"))
+    check('settings panel offers the palettes', js(window, "[...document.querySelectorAll('#settings select option')].filter((o) => ['lumen', 'couture', 'poster', 'aura'].includes(o.value)).length"), expect = 4)
     keys = "[...document.querySelectorAll('#settings .keys-row')].map((r) => r.textContent)"
     check('settings panel lists the keys', js(window, f"(rows => rows.length > 25 && rows.find((r) => r.includes('find in files')).split('find')[0])({keys})"),
           expect = '⌘⇧F' if MAC else 'Ctrl+Shift+F')
@@ -151,13 +187,62 @@ def run(window):
     check('table view rows', until(window, "$('table-view') && $('table-view').querySelector('.tv-count').textContent", wait = 10), expect = '2 of 2 rows')
     sort = "(() => { const h = $('table-view').querySelectorAll('.tv-head .tv-cell')[1]; h.click(); h.click(); return $('table-view').querySelector('.tv-row .tv-cell').textContent; })()"
     check('table view sorts a column', js(window, sort), expect = 'Fuc(a1-2)Gal')  # abundance, descending
+    to_row = ("(async () => { const n = document.querySelectorAll('#console-out img.plot').length;"
+              " appendImage({mime: 'image/svg+xml', data: btoa('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><rect width=\"100\" height=\"100\"/></svg>'), figure: true,"
+              " dots: {page: [100, 100], axes: [{x: 'a', y: 'b', dots: [[20, 20, '1', '2', 'Fuc(a1-2)Gal'], [80, 80, '3', '4', 'Neu5Gc(a2-6)Gal']]}]}});"
+              " const img = document.querySelectorAll('#console-out img.plot')[n]; await img.decode(); img.scrollIntoView(); const r = img.getBoundingClientRect();"
+              " const at = (x) => ({clientX: r.left + x, clientY: r.top + x}); const tip = (x) => { img.dispatchEvent(new MouseEvent('mousemove', at(x))); return figureTip.box.innerText.includes('Click to open'); };"
+              " const hints = [tip(20), tip(80)]; img.dispatchEvent(new MouseEvent('click', {...at(20), bubbles: true})); const row = document.querySelector('#table-view .tv-row.sel .tv-cell').title;"
+              " const mark = document.querySelector('#console-out .figure-mark'), marked = [Math.round(mark.offsetLeft + mark.offsetWidth / 2 - img.offsetLeft), Math.round(mark.offsetTop + mark.offsetHeight / 2 - img.offsetTop)];"
+              " document.querySelector('#table-view .tv-row.sel').click(); const again = !!document.querySelector('#console-out .figure-mark');"
+              " img.dispatchEvent(new MouseEvent('mouseleave')); document.querySelector('#table-view .tv-close').click(); const cleared = !document.querySelector('#console-out .figure-mark'); img.remove(); return [hints, row, marked, again, cleared]; })()")
+    check('a dot and its table row lead to each other', js(window, to_row), expect = [[True, False], 'Fuc(a1-2)Gal', [20, 20], True, True])
     js(window, "$('table-view').dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})) || 1")
     check('table view closes', js(window, "!$('table-view') && $('st-table').textContent"), expect = '⊞ Table')
     groups = PROJECT / 'groups.csv'  # two sample groups: the table view offers glycowork's differential expression
     groups.write_text('glycan,H1,H2,P1,P2\nNeu5Ac(a2-3)Gal(b1-4)GlcNAc,1,2,3,4\nFuc(a1-2)Gal,2,3,4,5\n', encoding = 'utf-8')
     js(window, f"openFile({json.dumps(str(groups))}).then(() => (toggleTable(S.active, true), 1))")
     check('table view offers Analyze', until(window, "$('table-view') && [...$('table-view').querySelectorAll('.tv-bar button')].map((b) => b.textContent).join(' ')", wait = 10),
-          expect = '▶ Analyze ≡ Text')
+          expect = '▶ Analyze ▦ Cluster ≡ Text')
+    # The button only where viscose can be imported, which the runners cannot, so not by a fixed answer; an open folder holding it counts
+    (HOME / 'checkout' / 'viscose').mkdir(parents = True)
+    (HOME / 'checkout' / 'viscose' / '__init__.py').write_text('', encoding = 'utf-8')
+    has = js(window, "api.has_viscose(tableCwd(S.active), S.roots)")
+    check('Cluster shows only with viscose', until(window, f"!document.querySelector('#table-view .tv-bar .hidden') === {json.dumps(bool(has))} && 1", wait = 15), expect = 1)
+    check('an open folder holding viscose counts', js(window, f"api.has_viscose(tableCwd(S.active), [{json.dumps(str(HOME / 'checkout'))}])"), expect = True)
+    typed = ("(() => { const run = runTyped; let code = ''; runTyped = (c) => { code = c; };"
+             " [...document.querySelectorAll('#table-view .tv-bar button')].find((b) => b.textContent.includes('Cluster')).click(); runTyped = run;"
+             " return code.split('\\n').filter((l) => /read_csv|clustermap/.test(l)).map((l) => l.replace(/r'[^']*'/, 'PATH')); })()")
+    check('Cluster writes its code', js(window, typed), expect = ["df = pd.read_csv(PATH, index_col = 0).select_dtypes('number')",
+                                                                 "fig, ax = vc.clustermap(z, figsize = (8, 3.3), xlabel = 'Samples', ylabel = 'Glycans', colorbar_label = 'z-score')"])
+    # viscose is not on the runners, so a stand-in map, in cell_map's form: 2 x 2 cells over the middle of the figure
+    grid = ("(async () => { const n = document.querySelectorAll('#console-out img.plot').length, values = btoa(String.fromCharCode(...new Uint8Array(new Float32Array([1.5, NaN, -2, 3]).buffer)));"
+            " appendImage({mime: 'image/svg+xml', data: btoa('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><rect width=\"100\" height=\"100\"/></svg>'), figure: true,"
+            " dots: {page: [100, 100], axes: [], cells: [{box: [20, 20, 80, 80], origin: [20, 20], step: [30, 30], rows: ['Neu5Ac(a2-3)Gal(b1-4)GlcNAc', 'Fuc(a1-2)Gal'], columns: ['H1', 'H2'], x: 'Samples', y: 'z-score', values}]}});"
+            " const img = document.querySelectorAll('#console-out img.plot')[n]; await img.decode(); img.scrollIntoView(); const r = img.getBoundingClientRect();"
+            " const at = (x, y) => ({clientX: r.left + x, clientY: r.top + y, bubbles: true}), tip = () => (figureTip.box.classList.contains('hidden') ? null : figureTip.box.innerText.replace(/\\s+/g, ' ').replace(/ Click.*/, ''));"
+            " img.dispatchEvent(new MouseEvent('mousemove', at(70, 30))); const empty = tip(); img.dispatchEvent(new MouseEvent('mousemove', at(30, 70))); const cell = tip(); const ring = [figureTip.ring.style.width, figureTip.ring.style.height];"
+            " img.dispatchEvent(new MouseEvent('mousemove', at(10, 10))); const off = tip();"
+            " img.dispatchEvent(new MouseEvent('click', at(30, 70))); const row = document.querySelector('.tv-side .tv-title').textContent, mark = document.querySelector('#console-out .figure-mark');"
+            " const band = [mark.className, mark.style.width, mark.style.height];"
+            " document.querySelector('#table-view .tv-close').click(); const cleared = !document.querySelector('#console-out .figure-mark');"
+            " document.querySelector('#table-view .tv-row .tv-cell').click(); const back = !!document.querySelector('#console-out .figure-mark.band'); document.querySelector('#table-view .tv-close').click();"
+            " img.remove(); return [empty, cell, ring, off, row, band, cleared, back]; })()")
+    check('a heatmap names the cell under the mouse, and it and its row lead to each other', js(window, grid),
+          expect = ['Neu5Ac(a2-3)Gal(b1-4)GlcNAc Sample H2 z-score missing', 'Fuc(a1-2)Gal Sample H1 z-score -2', ['30px', '30px'], None, 'Fuc(a1-2)Gal', ['figure-mark band', '60px', '30px'], True, True])
+    # What the console's side makes of a heatmap, with stand-ins for viscose's objects; the runners may lack numpy
+    stand_in = ("import json, sys\ntry:\n    import numpy\nexcept ImportError:\n    numpy = None\nmain = sys.modules['__main__']\n"
+                "class Axes:\n    rect, xlabel, _cbar = (10, 10, 80, 80), 'Samples', None\n    def __init__(self, artists):\n        self.artists = artists\n"
+                "    def page(self, x, y):\n        return 10 + 40 * x, 10 + 40 * y\n"
+                "class Fig:\n    width, height = 100, 100\n    def __init__(self, *artists):\n        self.axes = [Axes(list(artists))]\n"
+                "if numpy is None:\n    print('cell map: no numpy')\nelse:\n"
+                "    found = main.dot_map(Fig({'kind': 'heat', 'm': numpy.ones((2, 2)), 'rows': ['a', 'a '], 'columns': ['x', 'y']}))['cells'][0]\n"
+                "    print('cell map:', json.dumps([found['box'], found['origin'], found['step'], found['rows'], found['nth'], found['x'], len(found['values'])]), main.dot_map(Fig({'kind': 'line'})))\n")
+    js(window, f"(consoleInput.setValue({json.dumps(stand_in)}), submitConsole(), 1)")
+    check('the console maps a heatmap', until(window, "(/cell map: .*/.exec($('console-out').innerText) || [])[0]", wait = 15) in ('cell map: no numpy', 'cell map: [[10.0, 10.0, 90.0, 90.0], [10.0, 10.0], [40.0, 40.0], ["a", "a"], [0, 1], "Samples", 24] None'))
+    js(window, "(document.querySelector('#table-view .tv-row .tv-cell').click(), 1)")
+    check("a row's panel shows its groups", until(window, "(document.querySelector('.tv-plot img') && document.querySelector('.tv-plot img').naturalWidth > 100) || !document.querySelector('.tv-bars').classList.contains('hidden')", wait = 15))  # a box plot, or without glycowork and viscose on the runners, bars
+    js(window, "(document.querySelector('#table-view .tv-close').click(), 1)")
     js(window, "(toggleTable(S.active, false), 1)")
     check('Markdown tables', js(window, "markdownHtml('| Glycan | Log2FC |\\n|---|---|\\n| Gal(b1-3)GalNAc | 0.87 |\\n| a\\\\|b | -1e-07 |', true)"),
           expect = '<div class="md-table"><table><thead><tr><th>Glycan</th><th>Log2FC</th></tr></thead><tbody><tr><td>Gal(b1-3)GalNAc</td>'

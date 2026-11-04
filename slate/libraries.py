@@ -1,4 +1,4 @@
-"""Where a Python has the lab's libraries (NAMES: glycowork, CandyCrunch, glycorender, glycontact) installed, for hints and
+"""Where a Python has the lab's libraries (NAMES: glycowork, CandyCrunch, glycorender, glycontact, viscose) installed, for hints and
 go-to-definition into them when their checkouts are not among the open folders (hints.py, navigate.py): most of the group
 installs them with pip.
 
@@ -17,7 +17,7 @@ from pathlib import Path
 from slate import state
 from slate.system import NO_WINDOW
 
-NAMES = ('glycowork', 'candycrunch', 'glycorender', 'glycontact')
+NAMES = ('glycowork', 'candycrunch', 'glycorender', 'glycontact', 'viscose')
 FIND = ('import importlib.util, json, os, sys\n'
         'out = {}\n'
         'for name in sys.argv[1:]:\n'

@@ -109,12 +109,14 @@ kbd { font: 11px var(--ui); background: var(--panel); border: 1px solid var(--bo
 #console { height: 240px; min-height: 80px; display: flex; flex-direction: column; background: var(--bg); border-top: 1px solid var(--border); }
 .console-head { display: flex; align-items: center; gap: 4px; padding: 2px 6px 2px 10px; background: var(--panel); font-size: 12px; }
 #console-busy { color: var(--warn); }
-#console-out { flex: 1; overflow: auto; padding: 4px 10px; font: 13px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; outline: none; user-select: text; }
+#console-out { position: relative; flex: 1; overflow: auto; padding: 4px 10px; font: 13px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; outline: none; user-select: text; }
 #console-out .e { color: var(--error); }
 #console-out .sys { color: var(--fg-dim); font-style: italic; }
 #console-out .run { color: #6897BB; }
 #console-out .link { cursor: pointer; text-decoration: underline; text-decoration-color: #FF6B6866; }
 #console-out .link:hover { text-decoration-color: var(--error); }
+#console-out .sys.link { text-decoration-color: var(--border); }
+#console-out .sys.link:hover { text-decoration-color: var(--fg-dim); }
 #console-out .echo { display: block; }
 #console-out .echo .p { color: #606366; }
 #console-out img.plot { display: block; max-width: 100%; height: auto; margin: 4px 0; border-radius: 2px; }
@@ -256,3 +258,25 @@ select:focus { border-color: var(--accent); }
 ::-webkit-scrollbar-thumb { background: #5A5D5F66; border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: #5A5D5FAA; }
 ::-webkit-scrollbar-corner { background: transparent; }
+.figure-tip { position: fixed; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 6px 20px #0008; padding: 6px 10px; z-index: 55; pointer-events: none; font-size: 12px; line-height: 1.5; max-width: 320px; }
+.figure-tip-name { font-family: var(--mono); font-size: 11px; word-break: break-all; margin-bottom: 4px; }
+.figure-tip-drawing img { display: block; margin-bottom: 4px; }
+.figure-tip-row { display: flex; justify-content: space-between; gap: 16px; }
+.figure-tip-row b { font-family: var(--mono); font-weight: normal; color: var(--fg); }
+.figure-tip sub, .figure-tip sup { font-size: 9px; line-height: 0; }
+.figure-ring { position: fixed; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid #111; border-radius: 50%; box-shadow: 0 0 0 1.5px #FFF; z-index: 55; pointer-events: none; }
+.figure-tip-hint { margin-top: 4px; opacity: .65; font-size: 11px; }
+.figure-mark { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border: 2.5px solid var(--accent); border-radius: 50%; box-shadow: 0 0 0 2px #FFF, 0 0 10px 3px var(--accent); pointer-events: none; animation: figure-mark .7s ease-out 2; }
+@keyframes figure-mark { from { transform: scale(2); opacity: .3; } to { transform: scale(1); opacity: 1; } }
+.figure-ring.cell { box-sizing: border-box; border-radius: 2px; }
+.figure-mark.band { box-sizing: border-box; border-width: 2px; border-radius: 3px; animation-name: figure-band; }
+@keyframes figure-band { from { opacity: .3; } to { opacity: 1; } }
+.tv-plot img { display: block; width: 100%; margin: 12px 0 4px; border-radius: 9px; box-shadow: 1.5px 2.5px 7px #00000061; }
+.figure-palettes { position: absolute; display: flex; gap: 6px; padding: 2px; border-radius: 12px; transform: translateX(-100%); }  /* grows to the left of the figure's right edge */
+.figure-palettes:hover { padding: 5px 6px; background: #FFFFFFE6; box-shadow: 0 1px 4px #0005; }
+.figure-palette { width: 11px; height: 11px; min-width: 0; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: .8; }
+.figure-palettes:not(:hover) .figure-palette:not(.on) { display: none; }
+.figure-palettes:hover .figure-palette { width: 16px; height: 16px; }
+.figure-palette:hover { opacity: 1; transform: scale(1.15); }
+.figure-palettes:hover .figure-palette.on { opacity: 1; outline: 2px solid #333; outline-offset: 1px; }
+#console-out img.plot.redrawing { opacity: .55; transition: opacity .15s .1s; }

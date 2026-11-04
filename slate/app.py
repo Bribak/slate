@@ -22,7 +22,7 @@ WEB = Path(__file__).with_name('web')
 LEAN = ('--enable-low-end-device-mode --disable-rgba-4444-textures --force-gpu-mem-available-mb=192 --ui-enable-rgba-4444-textures'
         ' --enable-features=NetworkServiceInProcess2')
 SOFTWARE = '--disable-gpu --disable-gpu-compositing'
-SETTINGS = ('console_python', 'console_pythons', 'style_script', 'gpu', 'usage_log', 'glycan_drawings', 'update_check', 'reference_lookup')  # set_setting's keys
+SETTINGS = ('console_python', 'console_pythons', 'figure_palette', 'style_script', 'gpu', 'usage_log', 'glycan_drawings', 'update_check', 'reference_lookup')  # set_setting's keys
 MIME_TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.ico': 'image/x-icon', '.png': 'image/png'}
 PORT = 42001  # pywebview's default for its page server: a fixed port keeps the page's origin, and with it WebView2's caches (Monaco's compiled code), across sessions
 STALL = 15  # seconds after the window shows by which the page has asked for its state (it takes about 2)
@@ -40,7 +40,7 @@ class Api:
         self._window = None
         self._state = state.load()
         usage.enabled = self._state.get('usage_log', True)
-        self._console = repl.Console(self._console_emit)
+        self._console = repl.Console(self._console_emit, palette = self._state.get('figure_palette'))
         self._drawer = glycans.Drawer()
         self._opens, self._ready, self._lock = [], False, threading.Lock()
         self._hwnd, self._dpi = None, None
@@ -77,6 +77,8 @@ class Api:
             self._state[key] = value
         if key == 'usage_log':
             usage.enabled = value is not False
+        if key == 'figure_palette':
+            self._console.set_palette(value)
         state.save(self._state)
 
     def pick_python(self):
@@ -251,6 +253,12 @@ class Api:
         python = (self._console.python if path is None else None) or self._python_for(root)
         return libraries.installed(str(repl.Console.executable(python)), list(roots))
 
+    def has_viscose(self, cwd, roots = ()):
+        """Whether code the console runs from cwd can import viscose: an open folder holds it, as the console puts those on
+        sys.path, or the Python that would run it has it. Without it, the table view offers no ▦ Cluster."""
+        return (any((Path(r) / 'viscose' / '__init__.py').is_file() for r in roots)
+                or 'viscose' in libraries.installed(str(repl.Console.executable(self._python_for(cwd))), list(roots)))
+
     def hints(self, path, name, qualifier = None, roots = (), console = None):
         """Signatures and docstrings for a call or a name, from the open projects' own code (slate/hints.py)."""
         return hints.lookup(path, name, qualifier = qualifier, roots = list(roots), console = console, libraries = self._libraries(path, roots))
@@ -272,6 +280,10 @@ class Api:
     def glycan_highlight(self, glycan, motif, roots = ()):
         """glycan_full's drawing with a motif of glycowork's list highlighted, as the hover card's and table panel's motif names show it."""
         return self._drawer.request({'op': 'highlight', 'glycan': glycan, 'motif': motif}, self._state.get('console_python'), list(roots))
+
+    def glycan_groups(self, groups, roots = ()):
+        """A table row's samples as a box plot per group ({name: [values]}), in the settings' figure palette: {'svg', 'width'}, or {'error': message}."""
+        return self._drawer.request({'op': 'groups', 'groups': groups, 'palette': self._state.get('figure_palette')}, self._state.get('console_python'), list(roots))
 
     def glycan_info(self, glycan, roots = ()):
         """The hover card: canonical form, mass, composition, class and glycowork's motifs (slate/glycan_child.py)."""
@@ -316,6 +328,19 @@ class Api:
         """cwd: the project folder the code belongs to, whose Python runs it. source: {file, line, text, whole} for code from a
         file in the editor (repl_child.run_file)."""
         return self._console.run(code, cwd, list(paths), self._python_for(cwd), source)
+
+    def save_figure(self, figure, kind, cwd = None, name = 'figure'):
+        """Asks where to save a figure from the console, as pdf, svg or png, and has the console write it (repl_child.save_figure),
+        which says so in its output. False when that console is gone, None when the dialog was cancelled."""
+        import webview
+        result = self._window.create_file_dialog(webview.FileDialog.SAVE, directory = cwd or '', save_filename = f'{name}.{kind}', file_types = (f'{kind.upper()} (*.{kind})',))
+        if not result:
+            return None
+        return self._console.save_figure(figure, kind, result if isinstance(result, str) else result[0])
+
+    def redraw_figure(self, figure, palette):
+        """Has the console draw a figure again in another palette, whose image replaces the old one (repl_child.redraw_figure). False when that console is gone."""
+        return self._console.redraw_figure(figure, palette)
 
     def console_interrupt(self):
         self._console.interrupt()

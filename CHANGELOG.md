@@ -6,8 +6,22 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
-- viscose figures, including glycowork's volcano plots and networks once it draws with viscose, are cut out as stickers in the console, like matplotlib's.
+## 0.3.0 (2026-11-03)
+
+Plots that know their glycans, drawn with viscose. The features below that name viscose need viscose 0.1.2 and the glycowork that draws with it; without them, slate works as it did.
+
+- Point at a dot on a viscose figure in the console to read its values. On glycowork's volcano plots, a dot also shows its glycan as a sticker, and clicking it opens that glycan's row in the table. Clicking a row in the table lights up its dot on the plot.
+- ▦ Cluster in the table view, where the project's Python has viscose, draws a clustered heatmap of each glycan's z-scores across the samples, in the console, as code you can change. Point at a cell to see its glycan as a sticker, its sample, and its value; click it to open that glycan's row; a selected row lights up across the heatmap. Any viscose heatmap in the console answers the same way, glycowork's `get_heatmap` among them.
+- Clicking a table row shows a box plot per sample group, with every sample as a point, in place of the bars. Right-click it to copy it for a slide.
+- A small chip in the corner of a viscose figure in the console opens the four palettes, and picking one redraws the figure in place, without running its code again.
+- A Figure palette in the settings picks Lumen, Couture, Poster, or Aura for new viscose figures, glycowork's plots among them, without restarting the console.
+- Right-click a viscose figure or an annotated glycowork plot in the console to save it as PDF, SVG, or PNG. Saving a figure from ▶ Analyze suggests the table's name and folder, and the "Saved" line in the console opens the folder when clicked.
+- viscose figures in the console are vector images: sharper on high-DPI screens, and up to ten times faster to appear. Very large ones stay PNG. They are cut out as stickers, like matplotlib's.
+- Hints and docstrings for viscose while typing, including `fig` and `ax` methods such as `ax.scatter(`.
+- Hints no longer stall for up to half a second every 10 seconds when a project holds many data files, and a deleted module stops giving hints.
+- `f().g(` no longer shows the hint of a function named `g` in the same file.
 - Clicking an error in the status bar goes to that error, and F8 and Shift+F8 stay in the file, where they could jump to a style finding in another tab.
+- Opening a file from a project whose style checker is a plain script no longer stops style checks for the other tabs. viscose's checker now works with slate, so viscose's files get their squiggles.
 
 ## 0.2.2 (2026-10-31)
 

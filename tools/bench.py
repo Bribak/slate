@@ -34,6 +34,7 @@ ap.add_argument('--state', default = '{}', help = 'state keys as JSON, e.g. \'{"
 ap.add_argument('--line', type = int, default = None, help = 'show this line of the front tab before measuring memory')
 ap.add_argument('--behind', action = 'store_true', help = 'keep the window behind all others, unfocused, still drawing')
 ap.add_argument('--rect', default = None, help = 'window rect in physical pixels, x0,y0,x1,y1')
+ap.add_argument('--console', default = None, help = 'file of Python to run in the console and scroll through before measuring, e.g. one drawing figures')
 args = ap.parse_args()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from slate import state
@@ -225,6 +226,15 @@ def measure(window):
         if state_now and json.loads(state_now)[:2] == [True, True] and json.loads(state_now)[2] == 'loaded':
             break
     result = {'label': args.label, 'flags': args.flags, 'options': json.loads(args.options), 'ready_s': round(time.time() - T0, 2)}
+    if args.console:
+        t = time.time()
+        code = Path(args.console).read_text(encoding = 'utf-8')
+        js(window, f'(consoleInput.setValue({json.dumps(code)}), submitConsole(), 1)')
+        need(js(window, 'new Promise((r) => { const f = () => (consoleBusy ? setTimeout(f, 200) : r(1)); setTimeout(f, 500); })', wait = 300), 'console run')
+        result['console_s'] = round(time.time() - t, 2)
+        result['console_images'] = js(window, "document.querySelectorAll('#console-out img.plot').length")
+        # Each image in view for a moment, so that all of them are decoded, as when someone scrolls through them
+        need(js(window, """(async () => { const o = $('console-out'); const t0 = performance.now(); for (let y = 0; y < o.scrollHeight; y += o.clientHeight) { o.scrollTop = y; await new Promise((r) => setTimeout(r, 100)); } o.scrollTop = o.scrollHeight; return Math.round(performance.now() - t0); })()""", wait = 120), 'console scroll')
     time.sleep(3)
     on_top(window, True)
     log('probe start')

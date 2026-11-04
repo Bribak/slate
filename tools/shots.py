@@ -268,9 +268,9 @@ def run(window):
     js(window, f"openFile({json.dumps(str(TABLE))}).then(() => (toggleTable(S.active, true), 1))")
     if until(window, "document.querySelectorAll('#table-view .tv-cell .glycan').length >= 5 && 1", 'table drawings', wait = 30):
         js(window, "($('table-view').querySelectorAll('.tv-head .tv-cell')[5].click(), $('table-view').querySelectorAll('.tv-head .tv-cell')[5].click(), $('table-view').querySelector('.tv-row').click(), 1)")
-        if until(window, "!!document.querySelector('#table-view .tv-drawing img') && !!document.querySelector('#table-view .tv-card p') && 1", 'table row panel', wait = 20):
+        if until(window, "!!document.querySelector('#table-view .tv-drawing img') && !!document.querySelector('#table-view .tv-card p') && (document.querySelector('#table-view .tv-plot img') || {}).naturalWidth > 100 && 1", 'table row panel', wait = 20):
             js(window, "(document.activeElement.blur(), 1)")  # the filter box takes the focus, and drew its border and caret in the shot
-            shoot(window, 'table', f"{REGION}(['#tabs', '#table-view .tv-bars'], 14, '#main')")  # down to the row's bars
+            shoot(window, 'table', f"{REGION}(['#tabs', '#table-view .tv-card'], 14, '#main')")  # down to the card, under the row's box plot
     js(window, "(toggleTable(S.active, false), 1)")
     # the console, after running the script's cells
     js(window, f"(activate(S.tabs.find((t) => t.path === {json.dumps(str(DEMO))})), toggleConsole(true, false), $('console-clear').click(), editor.setPosition({{lineNumber: 3, column: 1}}), 1)")
@@ -295,6 +295,28 @@ def run(window):
                        " out.scrollTop += fig.getBoundingClientRect().top - out.getBoundingClientRect().top - 8; return 1; })()")
             time.sleep(1)
             shoot(window, 'analyze', f"{REGION}(['#main'], 0, null)")
+            # a live figure: another row's dot lit on the plot, and the tip of the dot under the mouse
+            js(window, "(document.querySelectorAll('#table-view .tv-row')[1].click(), 1)")
+            time.sleep(0.5)
+            hover = ("(() => { const img = document.querySelector('#console-out img.plot.figure'), live = liveFigures.get(img), r = img.getBoundingClientRect(), s = r.width / live.page[0];"
+                     " const d = live.axes[0].dots.find((x) => x[4] && x[4].startsWith('Gal(b1-3)GalNAc')); img.dispatchEvent(new MouseEvent('mousemove', {clientX: r.left + d[0] * s, clientY: r.top + d[1] * s})); return 1; })()")
+            js(window, hover)
+            if until(window, "(figureTip.box.querySelector('img') || {}).naturalWidth > 10 && 1", 'dot tip', wait = 20):
+                time.sleep(0.5)
+                shoot(window, 'live', f"{REGION}(['#main'], 0, null)")
+            # a clustered heatmap from the same table: the selected row marked across it, and the tip of the cell under the mouse
+            js(window, "(hideFigureTip(), $('console-clear').click(), [...$('table-view').querySelectorAll('.tv-bar button')].find((b) => b.textContent.includes('Cluster')).click(), 1)")
+            if until(window, "(document.querySelector('#console-out img.plot.figure') || {}).naturalWidth > 10 && !document.querySelector('#console-busy:not(.hidden)') && 1", 'clustermap', wait = 60):
+                js(window, "(() => { const out = $('console-out'), fig = out.querySelector('img.plot.figure'); document.activeElement.blur();"
+                           " out.scrollTop += fig.getBoundingClientRect().top - out.getBoundingClientRect().top - 8; return 1; })()")
+                js(window, "(document.querySelectorAll('#table-view .tv-row')[1].click(), 1)")
+                time.sleep(0.5)
+                cell = ("(() => { const img = document.querySelector('#console-out img.plot.figure'), live = liveFigures.get(img), g = live.cells[0], r = img.getBoundingClientRect(), s = r.width / live.page[0];"
+                        " const row = 1; img.dispatchEvent(new MouseEvent('mousemove', {clientX: r.left + (g.origin[0] + (g.columns.length - 1.5) * g.step[0]) * s, clientY: r.top + (g.origin[1] + (row + 0.5) * g.step[1]) * s})); return 1; })()")
+                js(window, cell)
+                if until(window, "(figureTip.box.querySelector('img') || {}).naturalWidth > 10 && 1", 'cell tip', wait = 20):
+                    time.sleep(0.5)
+                    shoot(window, 'cluster', f"{REGION}(['#main'], 0, null)")
 
 
 def start(*a, **kw):

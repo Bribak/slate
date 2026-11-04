@@ -43,6 +43,10 @@ class DevWindow:
     def run_js(self, script):
         self.js.put(script)
 
+    def create_file_dialog(self, dialog_type = None, directory = '', allow_multiple = False, save_filename = '', file_types = ()):
+        """A browser has no such dialog: a save goes next to the dev server's state, and anything else counts as cancelled."""
+        return (str(state.STATE_FILE.parent / save_filename),) if save_filename else None
+
 
 def handler_for(api, window):
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -90,6 +94,7 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     api, window = Api(), DevWindow()
     api._window = window
+    api.set_background = lambda background: None  # WebView2's own setting: there is no WebView2 here, and each blur logged an error
     server = http.server.ThreadingHTTPServer(('127.0.0.1', port), handler_for(api, window))
     print(f'slate dev server on http://localhost:{port}', flush = True)
     try:

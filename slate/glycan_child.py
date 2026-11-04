@@ -6,6 +6,8 @@ per request on stdin with one JSON line on stdout:
   glycowork has them, for the hover. Only hovered glycans need it, so it is drawn then rather than with every glycan on screen.
 * {"op": "highlight", "glycan": ..., "motif": ...}: the same, with a motif from glycowork's list (by name) highlighted, for
   the hover card's and the table panel's motif names.
+* {"op": "groups", "groups": {name: [values]}, "palette": ...}: {"svg": ..., "width": ...}, a table row's samples as a box
+  plot per group, drawn with viscose, or {"error": ...}.
 * {"op": "check", "glycans": [...]}: {glycan: {"canonical": ...} or {"error": ...}}, through canonicalize_iupac.
 * {"op": "info", "glycan": ...}: the hover card: mass, composition, class, motifs, canonical form.
 * {"op": "match", "query": ..., "glycans": [...]}: {"matches": [...]} for a motif name from glycowork's motif list, a
@@ -32,6 +34,7 @@ REAL_OUT = sys.stdout
 MATCH_LIMIT = 15  # seconds a motif search may take before it answers with what it has
 NAN_ONLY = types.SimpleNamespace(isna = lambda v: v is None or v != v)  # all of pandas composition_to_mass uses
 LINKAGE = re.compile(r'\([abo?][\d?]?-[\d?][\d?|/,]*\)')
+PANEL_SIZE = (4.6, 3.0)  # inches of a table row's box plot
 
 
 def send(msg):
@@ -55,6 +58,19 @@ def full(glycan, GlycoDraw, **style):
         return {'svg': GlycoDraw(glycan, suppress = True, sticker = True, **style).as_standalone_svg(), 'sticker': True}
     except TypeError:
         return {'svg': GlycoDraw(glycan, suppress = True, **style).as_svg(), 'sticker': False}
+
+
+def group_plot(groups, palette):
+    """{svg, width}: a box per sample group with each sample as a point, for a table row's panel. viscose came with GlycoDraw
+    (glycowork after its switch), and numpy with viscose, so this costs the process about 2 MB; an older glycowork raises
+    ImportError here, and the panel then keeps its bars. PANEL_SIZE fits the panel at viscose's 72 px per inch."""
+    import numpy as np
+    import viscose as vc
+    fig, ax = vc.subplots(figsize = PANEL_SIZE, palette = palette)
+    ax.boxplot(groups, fliers = False)
+    for i, values in enumerate(groups.values()):
+        ax.scatter(i + np.linspace(-0.13, 0.13, len(values)) if len(values) > 1 else [i] * len(values), values, s = 16, color = 'ink', alpha = 0.55, z = 5)
+    return {'svg': fig.to_svg(), 'width': fig.width}
 
 
 def draw(glycan, GlycoDraw):
@@ -174,6 +190,11 @@ def answer(msg, GlycoDraw, tools):
     if op in ('full', 'highlight'):
         try:
             return full(msg['glycan'], GlycoDraw, **({'highlight_motif': msg['motif']} if op == 'highlight' else {}))
+        except Exception as e:
+            return {'error': f'{type(e).__name__}: {e}'[:300]}
+    if op == 'groups':
+        try:
+            return group_plot(msg['groups'], msg.get('palette'))
         except Exception as e:
             return {'error': f'{type(e).__name__}: {e}'[:300]}
     if op == 'check':

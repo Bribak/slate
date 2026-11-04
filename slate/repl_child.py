@@ -20,6 +20,7 @@ import copy
 import importlib.machinery
 import importlib.util
 import io
+import itertools
 import json
 import linecache
 import os
@@ -35,6 +36,16 @@ REAL_OUT = sys.__stdout__
 LOCK = threading.Lock()
 BACKEND = 'module://slate_inline'
 MAX_IMAGE = 8_000_000  # bytes of base64 per image; a bigger one is described instead of shown
+MAX_SVG_MARKS, MAX_SVG = 2000, 700_000  # points and bars, and characters, of a viscose figure shown as SVG; beyond them, as PNG
+MAX_DOTS = 5000  # points of a viscose figure the page can name under the mouse; beyond it, no hovering
+MAX_CELLS = 500_000  # cells of one heatmap the page can look up under the mouse, 2 MB of floats; beyond it, no hovering
+SVG_FIGURE = None  # the viscose Figure that last wrote its SVG, for the dot map when annotate_figure's result comes back to svg_figure
+MAX_KEPT = 40  # figures kept for saving, as many as the page's MAX_IMAGES
+KEPT_FIGURES, FIGURE_IDS = {}, itertools.count(1)  # {id: viscose Figure or SVG text}, oldest first
+REDRAWS = {}  # {id: what redraw_figure needs}, for the viscose figures among them
+REPLACING = None  # the id of the figure redraw_figure is drawing again, which the new image replaces
+ANNOTATION = None  # what annotate_figure last did, for svg_figure: (the function, its other arguments, its keywords)
+FIGURE_PALETTE = os.environ.get('SLATE_FIGURE_PALETTE')  # the settings' palette for viscose figures; a set_palette in the code wins afterwards
 
 
 def send(msg):
@@ -69,10 +80,12 @@ def no_input(prompt = ''):
     raise RuntimeError('input() is not supported in the slate console')
 
 
-def send_image(mime, data, width = None, height = None, figure = False):
+def send_image(mime, data, width = None, height = None, figure = False, source = None, dots = None, redraw = None):
     """data: bytes, or SVG text; width and height in CSS pixels (PNG and JPEG only, from the image when not given).
     figure: a plot from matplotlib or viscose, which the page shows as a die-cut sticker like the glycan drawings. Its PNG
-    has twice the pixels and is shown at half, sharp on high-DPI screens."""
+    has twice the pixels and is shown at half, sharp on high-DPI screens. source: what save_figure can write this image
+    from, a viscose Figure or the SVG, which the page's menu then offers to save. dots: dot_map's, for hovering. redraw: (the
+    viscose Figure, what annotate_figure was given or None) for redraw_figure, which the page then offers in other palettes."""
     if isinstance(data, str):
         data = data.encode('utf-8')
     if mime == 'image/png' and width is None and data[12:16] == b'IHDR':
@@ -81,13 +94,148 @@ def send_image(mime, data, width = None, height = None, figure = False):
     if len(encoded) > MAX_IMAGE:
         print(f'({mime} of {len(data) // 1_000_000} MB not shown)')
         return
-    send({'img': {'mime': mime, 'data': encoded, 'width': width, 'height': height, **({'figure': True} if figure else {})}})
+    extra = {'figure': True} if figure else {}
+    if dots:
+        extra['dots'] = dots
+    if source is not None:
+        extra['saves'] = f'{os.getpid()}-{next(FIGURE_IDS)}'  # with the process, as the page keeps its images across a console restart
+        KEPT_FIGURES[extra['saves']] = source
+        if redraw is not None and hasattr(redraw[0], 'in_palette'):
+            REDRAWS[extra['saves']] = redraw
+            extra['palette'] = redraw[0].pal.name
+        if REPLACING:
+            extra['replaces'] = REPLACING
+        while len(KEPT_FIGURES) > MAX_KEPT:
+            oldest = next(iter(KEPT_FIGURES))
+            del KEPT_FIGURES[oldest]
+            REDRAWS.pop(oldest, None)
+    send({'img': {'mime': mime, 'data': encoded, 'width': width, 'height': height, **extra}})
 
 
 def send_figure(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format = 'png', dpi = fig.dpi * 2, bbox_inches = 'tight')
     send_image('image/png', buf.getvalue(), figure = True)
+
+
+def dot_map(fig):
+    """Where each point of a laid-out viscose Figure landed, so that the page can name the dot under the mouse: {'page':
+    [width, height], 'axes': [{'x', 'y': axis names, 'dots': [[left, top, x, y, name]]}]}, positions in page points from
+    the top left, values as text. name, only where there is one, is the point's in scatter(names = ...), else text annotated
+    at exactly that point, which on a glycowork volcano plot before it passes names is a significant dot's glycan. Points
+    outside the limits are left out. A heatmap's cells come as 'cells', see cell_map. None without either, over MAX_DOTS,
+    or if another viscose's internals differ."""
+    try:
+        np = sys.modules['numpy']  # viscose needs it
+        if sum(np.size(a['x']) for ax in fig.axes for a in ax.artists if a['kind'] == 'points') > MAX_DOTS:
+            return None
+        cells = cell_map(fig, np)
+        axes = []
+        for ax in fig.axes:
+            names = {(a['x'], a['y']): a['s'] for a in ax.artists if a['kind'] == 'text'}
+            x0, y0, w, h = ax.rect
+            dots = []
+            for a in ax.artists:
+                if a['kind'] == 'points':
+                    lefts, ups = ax.page(a['x'], a['y'])
+                    own = a.get('names')
+                    own = own.tolist() if own is not None else [None] * len(lefts)
+                    for x, y, left, up, mine in zip(a['x'].tolist(), a['y'].tolist(), lefts.tolist(), ups.tolist(), own):
+                        if x0 <= left <= x0 + w and y0 <= up <= y0 + h:  # NaN compares false
+                            name = names.get((x, y)) if mine is None else str(mine)
+                            dots.append([round(left, 1), round(fig.height - up, 1), f'{x:.4g}', f'{y:.4g}'] + ([name] if name else []))
+            if dots:
+                axes.append({'x': ax.xlabel, 'y': ax.ylabel, 'dots': dots})
+        if not axes and not cells:
+            return None
+        return {'page': [fig.width, fig.height], 'axes': axes, **({'cells': cells} if cells else {})}
+    except Exception:
+        return None
+
+
+def cell_map(fig, np):
+    """Each heatmap of a laid-out viscose Figure, as a grid the page can look a cell up in without an entry per cell: 'box',
+    the axes as [left, top, right, bottom], and 'origin' and 'step', the first cell's corner and how far on each next column
+    and row goes, in page points from the top left (a step is negative under inverted limits); 'rows' and 'columns', names as
+    drawn, from heatmap's names or, in a viscose before those, the tick labels ('' where it has none); the axis names; and
+    'values', the rows of cells as little-endian 32-bit floats in base64, NaN for an empty cell, up to MAX_CELLS. 'nth', only
+    where a name repeats: for each row, how many rows of that name come before it in the data, so that a click finds its own."""
+    maps = []
+    for ax in fig.axes:
+        for a in ax.artists:
+            if a['kind'] != 'heat' or a['m'].size > MAX_CELLS:
+                continue
+            ny, nx = a['m'].shape
+            xs, ys = ax.page(np.array([0.0, 1.0]), np.array([float(ny), ny - 1.0]))
+            rows, columns = a.get('rows'), a.get('columns')
+            if rows is None and getattr(ax, '_ytl', None) and len(ax._ytl) == ny:
+                rows = ax._ytl[::-1]
+            if columns is None and getattr(ax, '_xtl', None) and len(ax._xtl) == nx:
+                columns = ax._xtl
+            rows = [str(v).strip() for v in rows] if rows is not None else [''] * ny
+            bar = next((b._cbar['label'] for b in fig.axes if b._cbar and b._cbar['source'] is ax), '')
+            left, up, w, h = ax.rect
+            found = {'box': [round(float(v), 2) for v in (left, fig.height - up - h, left + w, fig.height - up)],
+                     'origin': [round(float(xs[0]), 3), round(float(fig.height - ys[0]), 3)],
+                     'step': [float(xs[1] - xs[0]), float(ys[0] - ys[1])],
+                     'rows': rows, 'columns': [str(v) for v in columns] if columns is not None else [''] * nx,
+                     'x': ax.xlabel, 'y': bar,
+                     'values': base64.b64encode(a['m'].astype('<f4').tobytes()).decode('ascii')}
+            if any(rows) and len(set(rows)) < ny:
+                order = getattr(fig, 'row_order', None)
+                order = order if order is not None and len(order) == ny else list(range(ny))
+                seen, found['nth'] = {}, [0] * ny
+                for r in sorted(range(ny), key = lambda r: order[r]):
+                    found['nth'][r] = seen.get(rows[r], 0)
+                    seen[rows[r]] = found['nth'][r] + 1
+            maps.append(found)
+    return maps
+
+
+def send_viscose(fig):
+    """A viscose Figure as SVG, which stays sharp on any screen and takes a tenth of the PNG's time in Couture and Poster and
+    under half in Lumen and Aura. It costs the page about 1 MB per figure, which a large one would multiply, as each path
+    stays parsed for as long as the image is kept. So a figure with more than MAX_SVG_MARKS points or bars, whose every mark
+    is a path but which viscose stamps into one image in a PNG, and an SVG over MAX_SVG, such as a heatmap's many glycans as
+    outlines, go as a PNG. So does a figure viscose cannot write as SVG. A heatmap's SVG is measured without its embedded
+    images: in Lumen and Aura its soft shadow alone is 1-2 MB of base64, with no paths to keep parsed, and writing the PNG
+    too would add twice the time."""
+    global SVG_FIGURE
+    svg = ''
+    drawn = 0
+    try:
+        np = sys.modules['numpy']  # viscose needs it
+        if sum(np.size(a['x']) for ax in fig.axes for a in ax.artists if 'x' in a) <= MAX_SVG_MARKS:
+            svg = fig.to_svg()
+            SVG_FIGURE = None  # shown right here, not on its way through annotate_figure
+            drawn = len(re.sub(r'base64,[^"]*', '', svg)) if any(a['kind'] == 'heat' for ax in fig.axes for a in ax.artists) else len(svg)
+    except Exception:
+        pass  # another viscose's internals
+    if svg and drawn <= MAX_SVG:
+        send_image('image/svg+xml', svg, figure = True, source = fig, dots = dot_map(fig), redraw = (fig, None))
+    else:
+        png = fig.to_png(144.0)
+        send_image('image/png', png, figure = True, source = fig, dots = dot_map(fig), redraw = (fig, None))
+
+
+def save_figure(figure, kind, path):
+    """Writes a figure the console showed, by the id send_image gave it, as pdf, svg or png, on the command's own turn between
+    runs. A viscose Figure as it stands now, through its own writers; an SVG, such as glycowork's annotated volcano, through
+    what annotate_figure saves with, from the glycorender glycowork brought along. PNG at 300 dpi, as both do by default."""
+    source = KEPT_FIGURES.get(figure)
+    if source is None:
+        send({'sys': f'That figure is no longer kept: the console keeps the newest {MAX_KEPT}'})
+        return
+    path = path if path.lower().endswith(f'.{kind}') else f'{path}.{kind}'
+    if not isinstance(source, str):
+        source.save(path)
+    elif kind == 'svg':
+        with open(path, 'w', encoding = 'utf-8', newline = '\n') as f:
+            f.write(source)
+    else:
+        from glycorender.render import simple_svg_to_pdf, simple_svg_to_png
+        (simple_svg_to_pdf if kind == 'pdf' else simple_svg_to_png)(source, path)
+    send({'saved': path})
 
 
 def show_figures(*args, **kwargs):
@@ -255,6 +403,9 @@ def show_rich(value):
     if sticker is not None:
         send_image('image/svg+xml', sticker[0], width = sticker[1], height = sticker[2])
         return True
+    if type(value).__module__ == 'viscose.figure' and hasattr(value, 'to_svg'):
+        send_viscose(value)
+        return True
     pyplot = sys.modules.get('matplotlib.pyplot')
     if hasattr(value, 'savefig') and hasattr(value, 'number') and pyplot is not None and value.number in pyplot.get_fignums():
         return True  # a pyplot figure: shown at the end of the run with the others
@@ -303,32 +454,126 @@ def svg_figure(svg_data, chem = False, shadow = False, sticker = False):
     annotate_figure puts on the dots of get_volcano and plot_network, so the volcano came out blank (glycowork 1.11.0 and
     1.11.1). A matplotlib or viscose figure gets the figure sticker: matplotlib names itself in its header, viscose in a
     metadata element at the top of its SVG, which annotate_figure leaves in place."""
+    global SVG_FIGURE, ANNOTATION
     svg = svg_data if isinstance(svg_data, str) else svg_data.as_svg()
     head = svg[:3000]
-    send_image('image/svg+xml', svg, figure = 'matplotlib' in head or '<metadata>viscose' in head)
+    figure = 'matplotlib' in head or '<metadata>viscose' in head
+    fig, SVG_FIGURE = SVG_FIGURE, None
+    annotation, ANNOTATION = ANNOTATION, None
+    dots = redraw = None
+    size = re.search(r'<svg[^>]*?\swidth="([\d.]+)[^>]*?\sheight="([\d.]+)', head)
+    if fig is not None and '<metadata>viscose' in head and size and abs(float(size.group(2)) - fig.height) < 0.5:  # the figure this SVG came from, as far as one can tell
+        dots = dot_map(fig)
+        if dots:
+            dots['page'] = [float(size.group(1)), float(size.group(2))]
+        redraw = (fig, annotation)
+    send_image('image/svg+xml', svg, figure = figure, source = svg if figure else None, dots = dots, redraw = redraw)
+
+
+def swap_function(attr, ours):
+    def swap(module):
+        if callable(vars(module).get(attr)):  # not getattr: IPython 8's IPython.core.display warns that its display is deprecated
+            setattr(module, attr, ours)
+    return swap
+
+
+def swap_glycowork_draw(module):
+    """svg_figure for display_svg_with_matplotlib, and annotate_figure noted, as drawing a figure in another palette means
+    annotating it again, with the arguments only get_volcano knew."""
+    swap_function('display_svg_with_matplotlib', svg_figure)(module)
+    annotate = vars(module).get('annotate_figure')
+    if callable(annotate):
+        def noted(svg_input, *args, **kwargs):
+            global ANNOTATION
+            result = annotate(svg_input, *args, **kwargs)
+            ANNOTATION = (noted, args, kwargs)
+            return result
+        module.annotate_figure = noted
+
+
+def redraw_figure(figure, palette):
+    """A viscose figure the console showed, by the id send_image gave it, drawn again in another palette (Figure.in_palette,
+    viscose 0.1.2) and annotated again where it was. Its image replaces the old one in the page, which keeps the figure's
+    place, and no code runs again."""
+    global REPLACING
+    kept = REDRAWS.get(figure)
+    if kept is None:
+        send({'sys': f'That figure is no longer kept: the console keeps the newest {MAX_KEPT}'})
+        return
+    fig, annotation = kept
+    moved = fig.in_palette(palette)
+    REPLACING = figure
+    try:
+        if annotation is None:
+            send_viscose(moved)
+        else:
+            annotate, args, kwargs = annotation
+            svg_figure(annotate(moved.to_svg(), *args, **{**kwargs, 'filepath': ''}))
+    finally:
+        REPLACING = None
+    KEPT_FIGURES.pop(figure, None)
+    REDRAWS.pop(figure, None)
+
+
+def swap_figure_show(module):
+    """fig.show(), which glycowork's plots end with, makes a PNG first and shows that (viscose's show_png). to_svg notes its
+    figure, as annotate_figure only hands on text and svg_figure needs the figure for its dot map."""
+    to_svg = module.Figure.to_svg
+
+    def noted(self):
+        global SVG_FIGURE
+        SVG_FIGURE = self
+        return to_svg(self)
+    module.Figure.show = lambda self, dpi = 144.0, viewer = True: send_viscose(self)
+    module.Figure.to_svg = noted
+
+
+def choose_palette(module):
+    if FIGURE_PALETTE:
+        module.set_palette(FIGURE_PALETTE)
 
 
 class DisplaySwaps:
-    """Swaps the console's display in for a module's own when it is imported: display() above for IPython's, since outside
-    a kernel IPython's only prints each repr, and svg_figure for glycowork's display_svg_with_matplotlib. A finder on
-    sys.meta_path, so `from IPython.display import display` already gets it, and glycowork's own calls (it imports the
-    function where it calls it, or calls it as a global of draw.py) find the swapped one."""
-    SWAPS = {'IPython.core.display_functions': ('display', display), 'IPython.core.display': ('display', display),  # IPython 8 and later; before 8
-             'glycowork.motif.draw': ('display_svg_with_matplotlib', svg_figure)}
+    """Changes a module as it is imported: display() above for IPython's, since outside a kernel IPython's only prints each
+    repr, svg_figure for glycowork's display_svg_with_matplotlib, send_viscose for fig.show(), and the settings' palette for
+    viscose's default. A finder on sys.meta_path, so `from IPython.display import display` already gets it, and glycowork's
+    own calls (it imports the function where it calls it, or calls it as a global of draw.py) find the swapped one."""
+    SWAPS = {'IPython.core.display_functions': swap_function('display', display), 'IPython.core.display': swap_function('display', display),  # IPython 8 and later; before 8
+             'glycowork.motif.draw': swap_glycowork_draw, 'viscose.figure': swap_figure_show, 'viscose.palettes': choose_palette}
 
     def find_spec(self, name, path, target = None):
         if name not in self.SWAPS:
             return None
         spec = importlib.machinery.PathFinder.find_spec(name, path)
         if spec is not None and spec.loader is not None and hasattr(spec.loader, 'exec_module'):
-            run_module, (attr, ours) = spec.loader.exec_module, self.SWAPS[name]
+            run_module, swap = spec.loader.exec_module, self.SWAPS[name]
 
             def exec_module(module):
                 run_module(module)
-                if callable(vars(module).get(attr)):  # not getattr: IPython 8's IPython.core.display warns that its display is deprecated
-                    setattr(module, attr, ours)
+                swap(module)
             spec.loader.exec_module = exec_module
         return spec
+
+
+def command(msg):
+    """What the page asks between runs, which is not code to run: {'palette'} changes the settings' palette in a running
+    console, as a restart would lose its variables, {'save'} writes a figure, and {'redraw', 'palette'} draws one again.
+    True if msg was one."""
+    global FIGURE_PALETTE
+    try:
+        if 'redraw' in msg:
+            redraw_figure(msg['redraw'], msg['palette'])
+        elif 'palette' in msg:
+            FIGURE_PALETTE = msg['palette']
+            if 'viscose.palettes' in sys.modules:
+                sys.modules['viscose.palettes'].set_palette(FIGURE_PALETTE)
+        elif 'save' in msg:
+            save_figure(msg['save'], msg['kind'], msg['path'])
+        else:
+            return False
+    except Exception as e:
+        print(f'({type(e).__name__}: {e})', file = sys.stderr)
+    return True
 
 
 def run(code, filename, ns, first_line = 1):
@@ -398,7 +643,7 @@ def main():
     busy = threading.Event()
     server = socket.create_server(('127.0.0.1', 0))
     threading.Thread(target = serve_interrupts, args = (server, busy), daemon = True).start()
-    send({'port': server.getsockname()[1]})
+    send({'port': server.getsockname()[1], 'pid': os.getpid()})
     send({'ready': f'{sys.version.split()[0]} ({sys.executable})'})
     while True:
         try:
@@ -408,6 +653,8 @@ def main():
         if not line:
             return
         msg = json.loads(line)
+        if command(msg):
+            continue
         busy.set()
         try:
             if msg.get('file'):

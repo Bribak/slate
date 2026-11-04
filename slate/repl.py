@@ -18,9 +18,10 @@ MAX_CHUNK = 200_000
 
 
 class Console:
-    def __init__(self, emit):
+    def __init__(self, emit, palette = None):
         self._emit = emit  # emit(list of [kind, payload]); called from a background thread, at most every FLUSH_EVERY seconds
-        self._proc, self._port = None, None
+        self._palette = palette  # viscose's default in the console, from the settings
+        self._proc, self._port, self._child = None, None, None
         self.python = None  # the python.exe running now
         self._pending, self._lock = [], threading.Lock()
         self._waiting = threading.Event()  # set by _push: the flusher sleeps until there is output, not every FLUSH_EVERY
@@ -60,6 +61,8 @@ class Console:
         env.setdefault('MPLBACKEND', 'module://slate_inline')  # figures in the console (repl_child.py); a backend set by hand wins
         env.setdefault('GLYCOWORK_RICH_DISPLAY', '1')  # GlycoDraw then returns its drawing, which shows itself, rather than a matplotlib figure
         env.setdefault('GLYCOWORK_DARK_DISPLAY', '1')  # and its drawings display, and inline with as_markdown(), as die-cut stickers (glycowork 1.11.1+)
+        if self._palette:
+            env['SLATE_FIGURE_PALETTE'] = self._palette
         if python and not Path(python).is_file():
             self._push('e', f'{python} not found; using the Python slate runs on\n')
         python = self.executable(python)
@@ -85,7 +88,7 @@ class Console:
                 self._push(key, msg[key])
             elif 'port' in msg:
                 if proc is self._proc:
-                    self._port = msg['port']
+                    self._port, self._child = msg['port'], msg.get('pid')  # its own word: a venv's python.exe on Windows is a launcher, whose process only starts the interpreter
             else:
                 for key, value in msg.items():
                     self._push(key, value)
@@ -112,6 +115,25 @@ class Console:
         self._next_id += 1
         self._send({'code': code, 'id': self._next_id, **(source or {})})
         return self._next_id
+
+    def set_palette(self, palette):
+        self._palette = palette
+        if self._proc is not None:
+            self._send({'palette': palette})
+
+    def save_figure(self, figure, kind, path):
+        """False when the console that showed the figure is gone."""
+        if self._proc is None or not figure.startswith(f'{self._child}-'):
+            return False
+        self._send({'save': figure, 'kind': kind, 'path': path})
+        return True
+
+    def redraw_figure(self, figure, palette):
+        """False when the console that showed the figure is gone."""
+        if self._proc is None or not figure.startswith(f'{self._child}-'):
+            return False
+        self._send({'redraw': figure, 'palette': palette})
+        return True
 
     def interrupt(self):
         if self._proc is None or self._port is None:
