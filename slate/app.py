@@ -255,9 +255,18 @@ class Api:
 
     def has_viscose(self, cwd, roots = ()):
         """Whether code the console runs from cwd can import viscose: an open folder holds it, as the console puts those on
-        sys.path, or the Python that would run it has it. Without it, the table view offers no ▦ Cluster."""
-        return (any((Path(r) / 'viscose' / '__init__.py').is_file() for r in roots)
-                or 'viscose' in libraries.installed(str(repl.Console.executable(self._python_for(cwd))), list(roots)))
+        sys.path, or the Python that would run it has it. Without it, the table view offers no ▦ Cluster. 'linkage' when
+        that viscose clusters by itself (`vc.linkage`, from 0.1.3 on), which ▦ Cluster's code then uses instead of scipy's."""
+        folder = next((Path(r) for r in roots if (Path(r) / 'viscose' / '__init__.py').is_file()), None)
+        if folder is None:
+            found = libraries.installed(str(repl.Console.executable(self._python_for(cwd))), list(roots)).get('viscose')
+            folder = Path(found) if found else None
+        if folder is None:
+            return False
+        try:
+            return 'linkage' if 'def linkage(' in (folder / 'viscose' / 'figure.py').read_text(encoding = 'utf-8') else True
+        except OSError:
+            return True
 
     def hints(self, path, name, qualifier = None, roots = (), console = None):
         """Signatures and docstrings for a call or a name, from the open projects' own code (slate/hints.py)."""

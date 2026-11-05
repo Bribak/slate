@@ -210,6 +210,8 @@ def run(window):
     has = js(window, "api.has_viscose(tableCwd(S.active), S.roots)")
     check('Cluster shows only with viscose', until(window, f"!document.querySelector('#table-view .tv-bar .hidden') === {json.dumps(bool(has))} && 1", wait = 15), expect = 1)
     check('an open folder holding viscose counts', js(window, f"api.has_viscose(tableCwd(S.active), [{json.dumps(str(HOME / 'checkout'))}])"), expect = True)
+    (HOME / 'checkout' / 'viscose' / 'figure.py').write_text('def linkage(data):\n    pass\n', encoding = 'utf-8')
+    check('a viscose with its own linkage says so', js(window, f"api.has_viscose(tableCwd(S.active), [{json.dumps(str(HOME / 'checkout'))}])"), expect = 'linkage')
     typed = ("(() => { const run = runTyped; let code = ''; runTyped = (c) => { code = c; };"
              " [...document.querySelectorAll('#table-view .tv-bar button')].find((b) => b.textContent.includes('Cluster')).click(); runTyped = run;"
              " return code.split('\\n').filter((l) => /read_csv|clustermap/.test(l)).map((l) => l.replace(/r'[^']*'/, 'PATH')); })()")

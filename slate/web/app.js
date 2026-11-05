@@ -1629,9 +1629,10 @@ function showTable(tab) {
     head.append(analyze);
     if (body.length > 1) {
       const cluster = el('button', 'hidden', '▦ Cluster');  // only once the project's Python turns out to have viscose
-      api.has_viscose(tableCwd(tab), S.roots).then((has) => cluster.classList.toggle('hidden', !has), () => {});
+      let own = false;  // whether that viscose clusters by itself, without scipy
+      api.has_viscose(tableCwd(tab), S.roots).then((has) => { cluster.classList.toggle('hidden', !has); own = has === 'linkage'; }, () => {});
       cluster.title = 'A clustered heatmap of each glycan\'s z-scores across the samples, in the console. Point at a cell for its glycan and value, click for its row';
-      cluster.onclick = () => clusterTable(tab, body.length, samples.length, glycanCol, body.some((r) => numeric.some((on, c) => on && header[c] && !isNumber(r[c] || ''))), Math.max(...sample.map((r) => (r[glycanCol] || '').length)));
+      cluster.onclick = () => clusterTable(tab, body.length, samples.length, glycanCol, body.some((r) => numeric.some((on, c) => on && header[c] && !isNumber(r[c] || ''))), Math.max(...sample.map((r) => (r[glycanCol] || '').length)), own);
       head.append(cluster);
     }
   }
@@ -2488,21 +2489,23 @@ function analyzeTable(tab, samples) {
 // glycan over CLUSTER_NAME characters (of the first 300 rows): an N-glycan's name would widen the page threefold and squeeze
 // the heatmap into a third of it, and many names thin out to a few anyway, while hovering shows each one. The color scale
 // stops at 3 from 11 samples on, where one outlier could otherwise pale all the rest; fewer samples cannot reach it. Missing
-// values stay empty, and count as the glycan's mean for clustering. Past CLUSTER_ROWS only the most variable glycans go in,
-// as the optimal leaf order takes 16 s at 2,000 and minutes from 5,000. A short table gets a shorter figure, whose cells would
-// otherwise stand taller than the console.
+// values stay empty, and count as the glycan's mean for clustering, through viscose's own linkage where it has one (`own`, from
+// 0.1.3 on) and scipy's before. Past CLUSTER_ROWS only the most variable glycans go in, as the optimal leaf order takes 3 s at
+// 2,000 and 35-42 s at 5,000 in viscose 0.1.3 (20 s and 15 minutes in scipy). A short table gets a shorter figure, whose cells
+// would otherwise stand taller than the console.
 const CLUSTER_LABELS = 50, CLUSTER_NAME = 90, CLUSTER_ROWS = 1000;
-function clusterTable(tab, rows, samples, glycanCol, missing, longest) {
+function clusterTable(tab, rows, samples, glycanCol, missing, longest, own) {
   if (isDirty(tab)) { toast('Save the table first: pandas reads it from the file'); return; }
   const delim = delimiterOf(tab.path, tab.model.getLineContent(1)), path = /['\n]/.test(tab.path) || tab.path.endsWith('\\') ? JSON.stringify(tab.path) : `r'${tab.path}'`;
   const sep = delim === ',' ? '' : `, sep = '${delim === '\t' ? '\\t' : delim}'`;
   const options = [...(rows < 20 ? [`figsize = (8, ${(Math.max(rows, 3) * 0.25 + 2.5).toFixed(1)})`] : []), ...(samples > 10 ? ['vmin = -3', 'vmax = 3'] : []), ...(rows > CLUSTER_LABELS || longest > CLUSTER_NAME ? ['yticklabels = False'] : []), "xlabel = 'Samples', ylabel = 'Glycans', colorbar_label = 'z-score'"].join(', ');
-  const code = ['import pandas as pd', 'import viscose as vc', ...(missing ? ['from scipy.cluster.hierarchy import linkage'] : []),
+  const code = ['import pandas as pd', 'import viscose as vc', ...(missing && !own ? ['from scipy.cluster.hierarchy import linkage'] : []),
     `df = pd.read_csv(${path}${sep}, index_col = ${glycanCol}).select_dtypes('number')`,
     ...(rows > CLUSTER_ROWS ? [`df = df[df.var(axis = 1).rank(ascending = False, method = 'first') <= ${CLUSTER_ROWS}]  # the most variable glycans`] : []),
     'z = df.sub(df.mean(axis = 1), axis = 0).div(df.std(axis = 1).replace(0, 1), axis = 0)',
     ...(missing ? ['filled = z.fillna(0)  # for clustering only; a missing value stays empty in the plot',
-      `fig, ax = vc.clustermap(z, row_linkage = linkage(filled, 'average', optimal_ordering = True), col_linkage = linkage(filled.T, 'average', optimal_ordering = True), ${options})`]
+      own ? `fig, ax = vc.clustermap(z, row_linkage = vc.linkage(filled), col_linkage = vc.linkage(filled.T), ${options})`
+        : `fig, ax = vc.clustermap(z, row_linkage = linkage(filled, 'average', optimal_ordering = True), col_linkage = linkage(filled.T, 'average', optimal_ordering = True), ${options})`]
       : [`fig, ax = vc.clustermap(z, ${options})`]), 'fig'].join('\n');
   analysis.path = tab.path;
   runTyped(code, tableCwd(tab));
