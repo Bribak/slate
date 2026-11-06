@@ -6,6 +6,12 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+## 0.3.1 (2026-11-06)
+
+- slate stays steady through days of work with many tabs open. Files changed outside slate (by Claude or git) and Ctrl+hovering names from libraries used to pile up in memory until the window went blank and reloaded itself.
+- Go to definition into libraries such as pandas and numpy answers sooner, and no longer takes 5-20 seconds now and then.
+- The setting for glycan drawings now says that it covers tables too.
+
 ## 0.3.0 (2026-11-03)
 
 Plots that know their glycans, drawn with viscose. The features below that name viscose need viscose 0.1.2 and the glycowork that draws with it; without them, slate works as it did.

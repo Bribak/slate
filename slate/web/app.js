@@ -287,6 +287,25 @@ function modelFor(path, text) {
   return model;
 }
 
+// A definition in a file that is not open needs a model, for Monaco's preview on Ctrl+hover and for Peek. Those models were
+// never disposed, so every library file jedi led to (pandas, numpy, torch, their stubs) stayed in the page's heap for the
+// session; with low-end mode's 256 MB cap, the page ran out of memory after 9-35 hours (2026-11-03 and 11-06). The newest
+// PEEKS_KEPT stay; an older one goes once no tab has taken it and no editor (a Peek, the preview) shows it.
+const PEEKS_KEPT = 4;
+const peeks = new Map();  // keyOf(path) -> model, oldest first
+function notePeek(path, model) {
+  const key = keyOf(path);
+  peeks.delete(key);
+  peeks.set(key, model);
+  let older = peeks.size - PEEKS_KEPT;
+  for (const [k, m] of peeks) {
+    if (older-- <= 0) break;
+    if (m.isDisposed() || S.tabs.some((t) => t.model === m)) peeks.delete(k);  // gone, or a tab's model now
+    else if (!monaco.editor.getEditors().some((e) => e.getModel() === m)) { peeks.delete(k); m.dispose(); }
+  }
+  return model;
+}
+
 const isDirty = (tab) => !!tab.model && tab.model.getAlternativeVersionId() !== tab.savedVersion;
 
 // A restored tab is only a name until it first comes to the front: then it is read, gets its model and is checked (loadTab).
@@ -432,6 +451,7 @@ async function save(tab = S.active, quiet = false) {
   tab.savedVersion = version;
   tab.deleted = false;
   tab.conflict = null;
+  if (!tab.model.isDisposed()) trimModel(tab.model);
   updateTabEl(tab);
   renderBanner();
   syncDirty();
@@ -771,6 +791,43 @@ function applyText(tab, text) {
   edited.applying = true;  // no edit location for an outside change or a restore
   try { model.pushEditOperations(editor.getModel() === model ? editor.getSelections() : [], edits, () => null); } finally { edited.applying = false; }
   model.pushStackElement();
+  trimModel(model);
+}
+
+// What a tab's model holds beyond its text, trimmed after each outside edit (applyText) and each save. A tab's model lives as
+// long as the tab, and Claude and git rewrite open files all day.
+// - Monaco's text buffer never lets go of text: whatever is inserted is appended to a buffer that only grows, with an array
+//   of its line starts, and stays there after it is deleted or replaced again: 20 replacements of a 35,000-character file
+//   left 602,000 characters and a 100,001-entry array. That ran the page out of its 256 MB after 9-35 hours with 51 tabs
+//   (renderer_failed, OutOfMemory, 2026-11-03 and 11-06; the dumps had 150-157 MB old and 83-90 MB large-object space).
+//   Re-chunking the text, as Monaco does when the line endings change (normalizeEOL), starts that buffer afresh without an
+//   event; the undo stack, decorations and tokens refer to positions in the text, not to the buffer. Only for a model whose
+//   line endings are uniform, which normalizeEOL keeps as they are.
+// - Undo keeps the old and the new text of every edit (serialized, 2 bytes a character), so each outside rewrite of a big
+//   file added about 2 MB for the session. The oldest steps go once a model's steps hold more than UNDO_BYTES: a day of
+//   typing is far less, and the last few outside rewrites stay undoable.
+// Both are Monaco internals, so a Monaco that renames them keeps everything, as before.
+const COMPACT_AT = 1_000_000;  // characters held beyond the text's own length
+const UNDO_BYTES = 4_000_000;
+function trimModel(model) {
+  const tree = model._buffer && model._buffer._pieceTree;
+  if (tree && Array.isArray(tree._buffers) && typeof tree.normalizeEOL === 'function' && tree._EOLNormalized) {
+    let held = 0;
+    for (const b of tree._buffers) held += b.buffer.length;
+    if (held > model.getValueLength() + COMPACT_AT) tree.normalizeEOL(tree._EOL);
+  }
+  const stacks = model._undoRedoService && model._undoRedoService._editStacks;
+  const past = stacks instanceof Map && (stacks.get(model.uri.toString()) || {})._past;
+  if (!Array.isArray(past)) return;
+  let bytes = 0, drop = 0;
+  for (let i = past.length - 1; i >= 0; i--) {
+    const data = past[i].actual && past[i].actual._data;
+    bytes += (data && data.byteLength) || 0;
+    if (bytes > UNDO_BYTES) { drop = i + 1; break; }
+  }
+  const shared = past.findIndex((e) => e.type !== 0);  // a step shared with other files (a workspace edit) stays, with all after it
+  if (shared >= 0) drop = Math.min(drop, shared);
+  if (drop) past.splice(0, drop);
 }
 
 function renderBanner() {
@@ -963,8 +1020,9 @@ function registerProviders() {
       const out = [];
       for (const d of found) {
         let target = monaco.editor.getModel(monaco.Uri.file(d.path));
+        if (target && peeks.has(keyOf(d.path))) notePeek(d.path, target);
         if (!target) {
-          try { const f = await api.read_file(d.path); target = modelFor(f.path, f.text); } catch (e) { continue; }
+          try { const f = await api.read_file(d.path); target = notePeek(f.path, modelFor(f.path, f.text)); } catch (e) { continue; }
         }
         out.push({uri: target.uri, range: new monaco.Range(d.line, d.col, d.line, d.col + (d.name || '').length)});
       }
@@ -3191,7 +3249,7 @@ async function openSettings() {
 
   section('Editor');
   check('Save changed files when slate loses focus', S.autosave, (on) => { S.autosave = on; persist(); });
-  check('Glycan drawings next to glycans in the code', !glycans.off && v.glycan_drawings !== false, (on) => {
+  check('Glycan drawings next to glycans in code and tables', !glycans.off && v.glycan_drawings !== false, (on) => {
     glycans.off = !on;
     set('glycan_drawings', on ? null : false);
     refreshGlycans();

@@ -3,7 +3,10 @@ cell, a restored tab read only when shown, a traceback link, Markdown output wit
 the settings panel and its keys, a key, find after a diff view, a second launch handing over a file, renaming a file (and moving one to the Trash on macOS and Linux), tables and
 a row's panel, local history and the last edit location.
 
-python tools/smoke.py   prints one JSON line of results and exits 1 if any check failed
+python tools/smoke.py [--behind]   prints one JSON line of results and exits 1 if any check failed
+
+--behind (Windows) keeps the window behind every other one, unfocused, still drawing, as tools/bench.py's does: for running
+it while Daniel works on the same screen (never put a test window in front of his).
 
 Runs an isolated session (a temporary folder with its own state.json and a small project), so the real session is
 never touched, and removed again at the end. .github/workflows/smoke.yml runs it on GitHub's macOS, Windows and Ubuntu machines (Ubuntu under Xvfb),
@@ -38,6 +41,11 @@ SCRIPTED = PROJECT / 'scripted' / 'module.py'  # a project whose check_style.py 
 SCRIPTED.write_text('x = 1\n', encoding = 'utf-8')
 state.save({'roots': [str(PROJECT)], 'tabs': [{'path': str(DEMO)}, {'path': str(UNREAD)}], 'active': str(DEMO), 'autosave': False, 'consoleOpen': True,
             'usage_log': False, 'update_check': False})
+BEHIND = '--behind' in sys.argv and sys.platform == 'win32'
+if BEHIND:  # Chromium stops drawing a covered window, and the probes wait on frames; one --disable-features only, as Chromium keeps the last
+    import os
+    from slate.app import LEAN
+    os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = LEAN + ' --disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion'
 import webview
 
 from slate import instance
@@ -276,8 +284,37 @@ def start(*a, **kw):
     return original(*a, **kw)
 
 
+def to_back():
+    """Send this process's windows behind all others, without activating them, while slate starts up (tools/bench.py)."""
+    import ctypes
+    import os
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(h, _):
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value == os.getpid() and u.IsWindowVisible(h):
+            found.append(h)
+        return True
+
+    for _ in range(200):
+        found.clear()
+        u.EnumWindows(each, 0)
+        for h in found:
+            u.SetWindowPos(h, wintypes.HWND(1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # HWND_BOTTOM; no move, size or activation
+        time.sleep(0.05)
+
+
 original = webview.start
 webview.start = start
+if BEHIND:
+    create_window = webview.create_window
+    webview.create_window = lambda *a, **kw: create_window(*a, **{**kw, 'focus': False})
+    threading.Thread(target = to_back, daemon = True).start()
 sys.argv = sys.argv[:1]
 from slate.app import main
 

@@ -5,12 +5,16 @@ import os
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
 
 from slate import __version__, fonts, glycans, glytoucan, hints, history, instance, libraries, linkages, navigate, pythons, references, repl, state, style, system, update, usage, workspace
 from slate.system import LINUX, MAC, WINDOWS, native
 
 WEB = Path(__file__).with_name('web')
+# The open files' code is parsed without a file name for go-to-definition, the outline and hints, and Python prints a
+# SyntaxWarning ('\d') to stderr each time. The style check, which shows them, compiles under the file's path and records them itself.
+warnings.filterwarnings('ignore', category = SyntaxWarning, module = '<unknown>')
 # WebView2 flags, measured with tools/bench.py on a 250% screen (8 tabs, console open): together about 220 MB less than plain GPU
 # rendering at the same scroll and typing latency, with pixel-identical output. Low-end mode alone would also store textures at
 # 4 bits per channel (#2B2B2B drawn as #333333), which --disable-rgba-4444-textures undoes. The GPU memory cap was 64 MB until

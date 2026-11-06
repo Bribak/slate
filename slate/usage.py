@@ -76,6 +76,12 @@ def summary(events):
                    f" ({len(started)} of {len(by_kind['shown'])} windows)")
     if by_kind['page_stalled']:
         out.append(f"page stalled {len(by_kind['page_stalled'])} times and was loaded again: {by_kind['page_stalled'][-1]}")
+    if by_kind['renderer_failed']:  # win.reload_on_crash; the Crashpad dumps under webview/EBWebView say why (CLAUDE.md)
+        why = Counter(e.get('reason', '?') for e in by_kind['renderer_failed'])
+        out.append(f"page's renderer died {len(by_kind['renderer_failed'])} times ({', '.join(f'{r} {n}' for r, n in why.most_common())}),"
+                   f" last {by_kind['renderer_failed'][-1]['t'][:16]}")
+    if by_kind['port']:
+        out.append(f"page server not on its usual port {len(by_kind['port'])} times (another listener held it)")
     calls, keys, long_tasks = defaultdict(lambda: [0, 0.0, 0.0, 0]), Counter(), [0, 0, 0.0]
     for e in by_kind['activity']:
         for name, (n, total, worst, errors) in e.get('calls', {}).items():

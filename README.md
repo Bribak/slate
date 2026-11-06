@@ -183,7 +183,7 @@ The settings live in `state.json` with your session: `%APPDATA%\slate\state.json
 * `"style_script"`: the `check_style.py` used for files outside any project with its own (default: `Documents\glycowork\.github\scripts\check_style.py`).
 * `"autosave": false`: turns off saving when the window loses focus.
 * `"usage_log": false`: turns off the local usage log (see Development).
-* `"glycan_drawings": false`: no SNFG drawings next to glycans in the code.
+* `"glycan_drawings": false`: no SNFG drawings next to glycans in code and tables.
 * `"gpu": false`: software rendering, saving about another 100 MB. On high-resolution screens it is noticeably slower: at 250% scaling a keystroke took 52 ms to appear instead of 22 ms.
 * `"update_check": false`: no daily check for a new version.
 

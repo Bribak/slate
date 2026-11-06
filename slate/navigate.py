@@ -553,7 +553,8 @@ def goto(path, source, line, col, roots, libraries = None):
             found = find(_current, (line, len(text[:word.start()].encode('utf-8'))), roots) if _current is not None else None
         if found is None:
             try:
-                found = with_jedi(path, source, line, word.start(), roots, ticket)
+                with heap.paused():  # jedi's trees of the file and of what it imports are millions of objects, and the collector walked them all
+                    found = with_jedi(path, source, line, word.start(), roots, ticket)
             except Superseded:
                 return []
         found = list({(d['path'], d['line'], d['col']): d for d in found}.values())
