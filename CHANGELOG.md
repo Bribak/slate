@@ -6,6 +6,8 @@ under `## Unreleased`; the version bump renames it.
 
 ## Unreleased
 
+- Point at a dot of a box, strip, or violin plot from viscose 0.2 to read its group, its value, and the sample it is, from the plot's `names`; with swarms and plots laid across the page too. The table panel's box plot answers the same way: point at a sample to read its name, group, and value.
+
 ## 0.3.1 (2026-11-06)
 
 - slate stays steady through days of work with many tabs open. Files changed outside slate (by Claude or git) and Ctrl+hovering names from libraries used to pile up in memory until the window went blank and reloaded itself.

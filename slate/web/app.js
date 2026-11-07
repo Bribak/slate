@@ -1809,14 +1809,17 @@ function showTable(tab) {
       if (plotted) {
         // A box per group from the drawing process, which already has viscose. The bars stay for a glycowork without it, and
         // show after a moment if the process is busy or still starting; the plot replaces them when it comes
-        const groups = {}, plot = el('div', 'tv-plot');
-        for (const [name, v] of values) (groups[groupOf(name)] = groups[groupOf(name)] || []).push(v);
+        const groups = {}, samples = {}, plot = el('div', 'tv-plot');
+        for (const [name, v] of values) {
+          (groups[groupOf(name)] = groups[groupOf(name)] || []).push(v);
+          (samples[groupOf(name)] = samples[groupOf(name)] || []).push(name);
+        }
         place(plot);
         bars.classList.add('hidden');
         barsLabel.classList.add('hidden');
         const showBars = () => { bars.classList.remove('hidden'); barsLabel.classList.remove('hidden'); };
         const waiting = setTimeout(showBars, 1000);
-        api.glycan_groups(groups, S.roots).then((reply) => {
+        api.glycan_groups(groups, S.roots, samples).then((reply) => {
           clearTimeout(waiting);
           if (!reply || !reply.svg) { showBars(); return; }
           bars.classList.add('hidden');
@@ -1825,6 +1828,7 @@ function showTable(tab) {
           const img = el('img');
           img.src = svgUrl(reply.svg);
           plot.append(img);
+          if (reply.dots) liveFigure(img, {...reply.dots, plain: true}, tab.path);  // the sample under the mouse, as on a console figure
         }, () => { clearTimeout(waiting); showBars(); });
       }
       for (const [name, v] of values) {
@@ -2701,7 +2705,7 @@ function tableOfDot(name, from) {
 
 // The other way round: the dot of the table's selected row stays marked on the plot, inside #console-out so that it scrolls
 // with the figure. The newest figure holding that name, one from this table first.
-const liveFigures = new WeakMap();  // img -> {page, axes, from}
+const liveFigures = new WeakMap();  // img -> {page, axes, cells, from, plain}
 const figureMark = {el: null, img: null, dot: null, reveal: false};
 
 function clearFigureMark() {
@@ -2797,9 +2801,10 @@ function cellAt(cells, x, y) {
   return null;
 }
 
-function liveFigure(img, {page, axes, cells = []}, from) {
+// plain: dots that name no table row, such as the samples of the table panel's plot, which show their tip and take no click
+function liveFigure(img, {page, axes, cells = [], plain = false}, from) {
   const attached = liveFigures.has(img) || img.dataset.live;
-  liveFigures.set(img, {page, axes, cells, from});
+  liveFigures.set(img, {page, axes, cells, from, plain});
   img.dataset.live = '1';
   if (attached) return;  // a figure drawn again keeps its listeners, which read the new map
   const dotAt = (ev) => {
@@ -2820,14 +2825,14 @@ function liveFigure(img, {page, axes, cells = []}, from) {
     const {dot, axis, r, sx, sy} = dotAt(ev);
     if (!dot) { hideFigureTip(); img.style.cursor = ''; return; }
     if (dot === figureTip.dot && img === figureTip.over) return;
-    const target = tableOfDot(dot[4], from);
+    const target = liveFigures.get(img).plain ? null : tableOfDot(dot[4], from);
     img.style.cursor = target ? 'pointer' : '';
     showFigureTip(img, r, dot, axis, sx, sy, target);
   });
   img.addEventListener('mouseleave', hideFigureTip);
   img.addEventListener('contextmenu', hideFigureTip);
   img.addEventListener('click', (ev) => {
-    const {dot} = dotAt(ev), target = dot && tableOfDot(dot[4], from);
+    const {dot} = dotAt(ev), target = dot && !liveFigures.get(img).plain && tableOfDot(dot[4], from);
     if (!target) return;
     toggleTable(target, true);
     if (table.tab !== target || !table.showGlycan(dot[4], dot.grid && dot.grid.nth ? dot.grid.nth[dot.row] : 0)) toast('This table has no row for exactly that glycan');

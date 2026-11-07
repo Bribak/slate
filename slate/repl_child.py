@@ -122,12 +122,14 @@ def dot_map(fig):
     """Where each point of a laid-out viscose Figure landed, so that the page can name the dot under the mouse: {'page':
     [width, height], 'axes': [{'x', 'y': axis names, 'dots': [[left, top, x, y, name]]}]}, positions in page points from
     the top left, values as text. name, only where there is one, is the point's in scatter(names = ...), else text annotated
-    at exactly that point, which on a glycowork volcano plot before it passes names is a significant dot's glycan. Points
-    outside the limits are left out. A heatmap's cells come as 'cells', see cell_map. None without either, over MAX_DOTS,
+    at exactly that point, which on a glycowork volcano plot before it passes names is a significant dot's glycan. A box,
+    strip, or violin plot's points (viscose 0.2) give their group, 'category · hue level', in place of x, or of y across the
+    page, and their sample from names = .... Points outside the limits are left out. A heatmap's cells come as 'cells', see cell_map. None without either, over MAX_DOTS,
     or if another viscose's internals differ."""
     try:
         np = sys.modules['numpy']  # viscose needs it
-        if sum(np.size(a['x']) for ax in fig.axes for a in ax.artists if a['kind'] == 'points') > MAX_DOTS:
+        if sum(np.size(a['x']) if a['kind'] == 'points' else sum(map(len, a['values'])) for ax in fig.axes for a in ax.artists
+               if a['kind'] == 'points' or a['kind'] in ('box', 'violin') and 'groups' in a) > MAX_DOTS:
             return None
         cells = cell_map(fig, np)
         axes = []
@@ -144,6 +146,20 @@ def dot_map(fig):
                         if x0 <= left <= x0 + w and y0 <= up <= y0 + h:  # NaN compares false
                             name = names.get((x, y)) if mine is None else str(mine)
                             dots.append([round(left, 1), round(fig.height - up, 1), f'{x:.4g}', f'{y:.4g}'] + ([name] if name else []))
+                elif a['kind'] in ('box', 'violin') and 'groups' in a:  # viscose 0.2's group points, at their spread or swarm places
+                    offsets = ax._spread(a)[0]
+                    for i, ((category, level), x, v) in enumerate(zip(a['groups'], a['x'].tolist(), a['values'])):
+                        drawn = a['offsets'] is not None if a['kind'] == 'box' else a['inner'] in ('points', 'swarm') or a['shapes'][i] is None
+                        if not drawn:
+                            continue
+                        across = x + offsets[i]
+                        lefts, ups = ax.page(v, across) if a['horizontal'] else ax.page(across, v)
+                        own = a['names'][i].tolist() if a['names'] is not None and a['names'][i] is not None else [None] * len(v)
+                        group = category + (f' · {level}' if level else '')
+                        for value, left, up, mine in zip(v.tolist(), lefts.tolist(), ups.tolist(), own):
+                            if x0 <= left <= x0 + w and y0 <= up <= y0 + h:
+                                shown = (f'{value:.4g}', group) if a['horizontal'] else (group, f'{value:.4g}')
+                                dots.append([round(left, 1), round(fig.height - up, 1), *shown] + ([str(mine)] if mine is not None else []))
             if dots:
                 axes.append({'x': ax.xlabel, 'y': ax.ylabel, 'dots': dots})
         if not axes and not cells:

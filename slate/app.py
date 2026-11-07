@@ -294,9 +294,10 @@ class Api:
         """glycan_full's drawing with a motif of glycowork's list highlighted, as the hover card's and table panel's motif names show it."""
         return self._drawer.request({'op': 'highlight', 'glycan': glycan, 'motif': motif}, self._state.get('console_python'), list(roots))
 
-    def glycan_groups(self, groups, roots = ()):
-        """A table row's samples as a box plot per group ({name: [values]}), in the settings' figure palette: {'svg', 'width'}, or {'error': message}."""
-        return self._drawer.request({'op': 'groups', 'groups': groups, 'palette': self._state.get('figure_palette')}, self._state.get('console_python'), list(roots))
+    def glycan_groups(self, groups, roots = (), names = None):
+        """A table row's samples as a box plot per group ({name: [values]}, with names {name: [samples]}), in the settings' figure
+        palette: {'svg', 'width', 'dots'}, or {'error': message}."""
+        return self._drawer.request({'op': 'groups', 'groups': groups, 'names': names, 'palette': self._state.get('figure_palette')}, self._state.get('console_python'), list(roots))
 
     def glycan_info(self, glycan, roots = ()):
         """The hover card: canonical form, mass, composition, class and glycowork's motifs (slate/glycan_child.py)."""
